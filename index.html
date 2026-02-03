@@ -1,0 +1,805 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { ComposedChart, BarChart, LineChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, ReferenceLine, Legend, LabelList, PieChart, Pie } from 'recharts';
+import { ClipboardList, Save, Trash2, TrendingUp, AlertCircle, CheckCircle, Package, Target, LayoutDashboard, Settings, Filter, Truck, Loader2, FileSpreadsheet, UploadCloud, Briefcase, ShoppingBag, Layers, ChevronDown, PieChart as PieIcon, Warehouse, Search, Table, AlertTriangle, RotateCcw, Database } from 'lucide-react';
+import { initializeApp } from "firebase/app";
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
+import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, writeBatch } from "firebase/firestore";
+
+// --- FIREBASE CONFIGURATION ---
+const userProvidedConfig = {
+  apiKey: "AIzaSyDZF4CJLz9WFrbrv0EdSUqdpfyEPuPRAT4",
+  authDomain: "laporan-eecfd.firebaseapp.com",
+  projectId: "laporan-eecfd",
+  storageBucket: "laporan-eecfd.firebasestorage.app",
+  messagingSenderId: "789866197217",
+  appId: "1:789866197217:web:b26378b445fa2c501fc7a0"
+};
+
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : userProvidedConfig;
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'stock-dashboard-default';
+
+const Card = ({ children, className = "" }) => (
+  <div className={`bg-white rounded-xl shadow-sm border border-slate-200 p-6 ${className}`}>
+    {children}
+  </div>
+);
+
+const StatCard = ({ title, value, subtext, icon: Icon, colorClass, percentage }) => (
+  <Card>
+    <div className="flex items-start justify-between">
+      <div>
+        <p className="text-slate-500 text-sm font-medium mb-1">{title}</p>
+        <h3 className="text-2xl font-bold text-slate-800">{value}</h3>
+        {percentage !== undefined && (
+            <div className="flex items-center gap-2 mt-1.5 mb-1">
+                <span className={`text-xs font-bold px-2 py-0.5 rounded-md bg-opacity-10 border ${colorClass.replace('text-', 'bg-')} ${colorClass.replace('text-', 'border-')} ${colorClass}`}>
+                    {percentage}%
+                </span>
+                <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wide">Level</span>
+            </div>
+        )}
+        {subtext && <p className={`text-xs ${percentage ? 'mt-0' : 'mt-1'} ${colorClass} opacity-80`}>{subtext}</p>}
+      </div>
+      <div className={`p-3 rounded-lg ${colorClass} bg-opacity-10`}>
+        <Icon size={24} className={colorClass.replace('text-', 'text-opacity-100 ')} />
+      </div>
+    </div>
+  </Card>
+);
+
+export default function App() {
+  const TARGET_ACCURACY = 99.98;
+  const DAMAGE_TOLERANCE = 0.50; 
+  const TARGET_PALLET_QTY = 1400; 
+  const TARGET_PALLET_PCT = 35; 
+
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [adminSection, setAdminSection] = useState('stock'); 
+  const [filterPeriod, setFilterPeriod] = useState('Semua');
+  const [outboundSubTab, setOutboundSubTab] = useState('Retail');
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  // Data States
+  const [data, setData] = useState([]);
+  const [outboundData, setOutboundData] = useState([]);
+  const [utilizationData, setUtilizationData] = useState([]);
+  const [damageData, setDamageData] = useState([]);
+  const [palletReturnData, setPalletReturnData] = useState([]); 
+  const [masterData, setMasterData] = useState([]); 
+
+  // Form States
+  const [formData, setFormData] = useState({ period: 'Desember 2023', category: 'Retail', system: '', physical: '' });
+  const [outboundForm, setOutboundForm] = useState({ category: 'Retail', product: 'D-1', month: 'Jan', qty: '' });
+  const [utilizationForm, setUtilizationForm] = useState({ period: 'Jan', zone: 'Zona W/H Finish Good', capacity: '56549', used: '' });
+  const [damageForm, setDamageForm] = useState({ month: 'Jan', handling: '', damage: '' });
+  const [palletForm, setPalletForm] = useState({ month: 'Jan', returned25: '', returned26: '', outgoing25: '', outgoing26: '', targetQty: '1400', targetPct: '35' });
+
+  // Bulk Upload States
+  const [bulkText, setBulkText] = useState('');
+  const [bulkPreview, setBulkPreview] = useState([]);
+  const [bulkCategory, setBulkCategory] = useState('Retail'); 
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [palletBulkText, setPalletBulkText] = useState('');
+  const [palletBulkPreview, setPalletBulkPreview] = useState([]);
+  
+  // Master Data Bulk Upload State
+  const [masterBulkText, setMasterBulkText] = useState('');
+  const [masterBulkPreview, setMasterBulkPreview] = useState([]);
+
+  // Constants
+  const categories = ['Retail', 'Project', 'KN 1', 'KN 2', 'Pallet Silog', 'Pallet Project'];
+  const outboundCategories = ['Retail', 'Project'];
+  const warehouseZones = ['Zona W/H Finish Good']; 
+  const outboundProductsList = [
+    'ADV-1', 'ADV-2', 'D-1', 'D-2', 'D-2TR', 'D-2X', 'D-3', 'D-3SW', 'D-4', 
+    'K-1', 'K-2', 'K-3', 'K-4', 'K-5', 'KN-1', 'KN-2', 'L-1', 'L-3', 'L-4', 
+    'MiBond', 'Migrout', 'MIPlus', 'MIPro', 'MIProof Flex'
+  ];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  // --- FIREBASE AUTH & SYNC ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth Error:", error);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Sync Data Helper
+  const syncCollection = (collName, setter) => {
+    if (!user) return;
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', collName));
+    return onSnapshot(q, (snapshot) => {
+      const fetchedData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      if (collName === 'master_data_pallet') {
+          fetchedData.sort((a, b) => (a.material || '').localeCompare(b.material || ''));
+      } else {
+          fetchedData.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      }
+      setter(fetchedData);
+    });
+  };
+
+  useEffect(() => {
+     if(!user) return;
+     const unsub1 = syncCollection('stock_accuracy', setData);
+     const unsub2 = syncCollection('outbound_fg', setOutboundData);
+     const unsub3 = syncCollection('warehouse_utilization', setUtilizationData);
+     const unsub4 = syncCollection('damage_rate', setDamageData);
+     const unsub5 = syncCollection('pallet_return', setPalletReturnData); 
+     const unsub6 = syncCollection('master_data_pallet', setMasterData); 
+     return () => { unsub1?.(); unsub2?.(); unsub3?.(); unsub4?.(); unsub5?.(); unsub6?.(); };
+  }, [user]);
+
+  // --- COMPUTED METRICS ---
+  const availablePeriods = useMemo(() => {
+    const periods = [...new Set(data.map(item => item.period))];
+    return ['Semua', ...periods];
+  }, [data]);
+
+  const dashboardData = useMemo(() => {
+    if (filterPeriod === 'Semua') return data;
+    return data.filter(item => item.period === filterPeriod);
+  }, [data, filterPeriod]);
+
+  const stats = useMemo(() => {
+    if (dashboardData.length === 0) return { avgAccuracy: 0, totalVariance: 0, totalItems: 0, statusColor: 'text-slate-500' };
+    const totalSystem = dashboardData.reduce((sum, item) => sum + Number(item.system), 0);
+    const totalPhysical = dashboardData.reduce((sum, item) => sum + Number(item.physical), 0);
+    const totalAbsVariance = dashboardData.reduce((sum, item) => sum + Math.abs(item.variance), 0);
+    const globalAccuracy = totalSystem === 0 ? 0 : ((1 - (totalAbsVariance / totalSystem)) * 100);
+    const isTargetMet = globalAccuracy >= TARGET_ACCURACY;
+    return {
+      avgAccuracy: globalAccuracy.toFixed(3),
+      totalVariance: totalPhysical - totalSystem,
+      totalItems: dashboardData.length,
+      isTargetMet,
+      statusColor: isTargetMet ? "text-emerald-600" : "text-rose-600"
+    };
+  }, [dashboardData, TARGET_ACCURACY]);
+
+  const chartData = useMemo(() => {
+    const agg = {};
+    categories.forEach(c => { agg[c] = { category: c, totalSystem: 0, totalVariance: 0, count: 0 }; });
+    dashboardData.forEach(item => {
+      if (agg[item.category]) {
+        agg[item.category].totalSystem += Number(item.system);
+        agg[item.category].totalVariance += Math.abs(item.variance);
+        agg[item.category].count += 1;
+      }
+    });
+    return Object.values(agg).map(item => {
+      const acc = item.totalSystem === 0 ? 0 : ((1 - (item.totalVariance / item.totalSystem)) * 100);
+      return { name: item.category, accuracy: parseFloat(acc.toFixed(3)), count: item.count };
+    });
+  }, [dashboardData]);
+
+  const outboundGlobals = useMemo(() => {
+    let retailTotal = 0;
+    let projectTotal = 0;
+    outboundData.forEach(item => {
+      const cat = item.category || 'Retail'; 
+      if (cat === 'Retail') retailTotal += Number(item.qty);
+      if (cat === 'Project') projectTotal += Number(item.qty);
+    });
+    const grandTotal = retailTotal + projectTotal;
+    return { 
+      retailTotal, projectTotal, grandTotal,
+      retailPercentage: grandTotal === 0 ? 0 : ((retailTotal / grandTotal) * 100).toFixed(1),
+      projectPercentage: grandTotal === 0 ? 0 : ((projectTotal / grandTotal) * 100).toFixed(1)
+    };
+  }, [outboundData]);
+
+  const globalOutboundMatrix = useMemo(() => {
+    const matrix = {};
+    outboundProductsList.forEach(p => { matrix[p] = { product: p, total: 0 }; months.forEach(m => matrix[p][m] = 0); });
+    outboundData.forEach(item => {
+        if (!matrix[item.product]) { matrix[item.product] = { product: item.product, total: 0 }; months.forEach(m => matrix[item.product][m] = 0); }
+        matrix[item.product][item.month] += Number(item.qty);
+        matrix[item.product].total += Number(item.qty);
+    });
+    return Object.values(matrix).map(item => ({ ...item, percentage: outboundGlobals.grandTotal === 0 ? 0 : ((item.total / outboundGlobals.grandTotal) * 100).toFixed(1) }));
+  }, [outboundData, outboundGlobals.grandTotal]);
+
+  const filteredOutboundData = useMemo(() => {
+    return outboundData.filter(item => {
+      const itemCat = item.category || 'Retail'; 
+      return itemCat === outboundSubTab;
+    });
+  }, [outboundData, outboundSubTab]);
+
+  const outboundMatrix = useMemo(() => {
+    const matrix = {};
+    outboundProductsList.forEach(p => { matrix[p] = { product: p, total: 0 }; months.forEach(m => matrix[p][m] = 0); });
+    filteredOutboundData.forEach(item => {
+        if (!matrix[item.product]) { matrix[item.product] = { product: item.product, total: 0 }; months.forEach(m => matrix[item.product][m] = 0); }
+        matrix[item.product][item.month] += Number(item.qty);
+        matrix[item.product].total += Number(item.qty);
+    });
+    const globalTotal = Object.values(matrix).reduce((acc, curr) => acc + curr.total, 0);
+    return Object.values(matrix).filter(item => item.total > 0).map(item => ({ ...item, percentage: globalTotal === 0 ? 0 : ((item.total / globalTotal) * 100).toFixed(1) }));
+  }, [filteredOutboundData]);
+
+  const outboundAnalysis = useMemo(() => {
+    const topProducts = [...outboundMatrix].sort((a, b) => b.total - a.total).slice(0, 5).map(p => ({ name: p.product, value: p.total }));
+    const monthlyTrend = months.map(m => {
+      const sum = filteredOutboundData.filter(d => d.month === m).reduce((acc, curr) => acc + curr.qty, 0);
+      return { name: m, total: sum };
+    });
+    const totalYTD = outboundMatrix.reduce((acc, curr) => acc + curr.total, 0);
+    const bestSeller = topProducts.length > 0 ? topProducts[0].name : '-';
+    return { topProducts, monthlyTrend, totalYTD, bestSeller };
+  }, [outboundMatrix, filteredOutboundData]);
+
+  const utilizationStats = useMemo(() => {
+    const latestSnapshot = utilizationData.sort((a, b) => b.timestamp - a.timestamp)[0] || { capacity: 56549, used: 0 };
+    const totalCapacity = Number(latestSnapshot.capacity) || 56549;
+    const totalUsed = Number(latestSnapshot.used) || 0;
+    const utilizationRate = totalCapacity === 0 ? 0 : ((totalUsed / totalCapacity) * 100).toFixed(1);
+    const emptySpace = totalCapacity - totalUsed;
+    const monthlyTrendData = months.map(m => {
+        const entry = utilizationData.filter(d => d.period && d.period.includes(m)).sort((a, b) => b.timestamp - a.timestamp)[0];
+        const cap = entry ? Number(entry.capacity) : 56549; 
+        const us = entry ? Number(entry.used) : 0;
+        return { name: m, Used: us, Empty: cap > us ? cap - us : 0, Capacity: cap, utilization: cap === 0 ? 0 : (us / cap * 100).toFixed(1) };
+    });
+    return { totalCapacity, totalUsed, utilizationRate, emptySpace, monthlyTrendData };
+  }, [utilizationData]);
+
+  const damageStats = useMemo(() => {
+    const totalHandling = damageData.reduce((sum, item) => sum + Number(item.handling), 0);
+    const totalDamage = damageData.reduce((sum, item) => sum + Number(item.damage), 0);
+    const avgRate = totalHandling === 0 ? 0 : ((totalDamage / totalHandling) * 100).toFixed(3);
+    const isSafe = parseFloat(avgRate) <= DAMAGE_TOLERANCE;
+    const monthlyTrend = months.map(m => {
+        const entry = damageData.filter(d => d.month === m).sort((a, b) => b.timestamp - a.timestamp)[0];
+        const h = entry ? Number(entry.handling) : 0;
+        const d = entry ? Number(entry.damage) : 0;
+        const r = h === 0 ? 0 : ((d / h) * 100).toFixed(3);
+        return { name: m, rate: parseFloat(r), limit: DAMAGE_TOLERANCE };
+    });
+    return { totalHandling, totalDamage, avgRate, isSafe, monthlyTrend };
+  }, [damageData]);
+
+  const filteredStandards = useMemo(() => {
+    if (!searchTerm) return masterData;
+    return masterData.filter(item => 
+        (item.material || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+        (item.matNum || '').toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [searchTerm, masterData]);
+
+  const palletStats = useMemo(() => {
+      const dataByMonth = {};
+      months.forEach(m => dataByMonth[m] = { returned25: 0, returned26: 0, outgoing25: 0, outgoing26: 0, targetQty: 1400, targetPct: 35 });
+      
+      palletReturnData.forEach(item => {
+          if (dataByMonth[item.month]) {
+             dataByMonth[item.month].returned26 = Number(item.returned26 || item.returned || 0);
+             dataByMonth[item.month].returned25 = Number(item.returned25 || 0);
+             dataByMonth[item.month].outgoing26 = Number(item.outgoing26 || item.outgoing || 0);
+             dataByMonth[item.month].outgoing25 = Number(item.outgoing25 || 0);
+             if (item.targetQty) dataByMonth[item.month].targetQty = Number(item.targetQty);
+          }
+      });
+
+      const tableRows = months.map((m, idx) => {
+          const d = dataByMonth[m];
+          const actualVsTarget = d.targetQty === 0 ? 0 : Math.round((d.returned26 / d.targetQty) * 100);
+          const actualVsOutgoing = d.outgoing26 === 0 ? 0 : Math.round((d.returned26 / d.outgoing26) * 100);
+          return { no: idx + 1, month: m, ...d, actualVsTarget, actualVsOutgoing };
+      });
+
+      const totalReturned26 = tableRows.reduce((sum, r) => sum + r.returned26, 0);
+      const totalOutgoing26 = tableRows.reduce((sum, r) => sum + r.outgoing26, 0);
+      const totalTargetQty = tableRows.reduce((sum, r) => sum + r.targetQty, 0); 
+      const totalActualVsTarget = totalTargetQty === 0 ? 0 : Math.round((totalReturned26 / totalTargetQty) * 100);
+      const totalActualVsOutgoing = totalOutgoing26 === 0 ? 0 : Math.round((totalReturned26 / totalOutgoing26) * 100);
+      const chartData = tableRows.map(r => ({ name: r.month, Returned: r.returned26, Outgoing: r.outgoing26, Target: r.targetQty }));
+      return { tableRows, totalReturned26, totalOutgoing26, totalTargetQty, totalActualVsTarget, totalActualVsOutgoing, chartData };
+  }, [palletReturnData]);
+
+  // --- HANDLERS ---
+  const handleInputChange = (e) => setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
+  const handleUtilizationChange = (e) => setUtilizationForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
+  const handleOutboundChange = (e) => setOutboundForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
+  const handleDamageChange = (e) => setDamageForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
+  const handlePalletChange = (e) => setPalletForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
+
+  // Submit Handlers
+  const handleSubmit = async (e) => { e.preventDefault(); if (!user) return; if (formData.system === '' || formData.physical === '' || formData.period === '') return; const sys = Number(formData.system); const phys = Number(formData.physical); const variance = phys - sys; let acc = sys === 0 ? 0 : (1 - (Math.abs(variance) / sys)) * 100; if (acc < 0) acc = 0; const newItem = { date: new Date().toISOString().split('T')[0], period: formData.period, category: formData.category, system: sys, physical: phys, variance: variance, accuracy: parseFloat(acc.toFixed(3)), timestamp: Date.now() }; try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'stock_accuracy'), newItem); setFormData(prev => ({ ...prev, system: '', physical: '' })); } catch (error) { console.error(error); alert("Error"); } };
+  const handleOutboundSubmit = async (e) => { e.preventDefault(); if (!user) return; if (outboundForm.qty === '') return; const newItem = { category: outboundForm.category, product: outboundForm.product, month: outboundForm.month, qty: Number(outboundForm.qty), timestamp: Date.now() }; try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'outbound_fg'), newItem); setOutboundForm(prev => ({ ...prev, qty: '' })); alert(`Saved`); } catch (error) { console.error(error); alert("Error"); } };
+  const handleUtilizationSubmit = async (e) => { e.preventDefault(); if (!user) return; if (utilizationForm.capacity === '' || utilizationForm.used === '') return; const newItem = { period: utilizationForm.period, zone: utilizationForm.zone, capacity: Number(utilizationForm.capacity), used: Number(utilizationForm.used), timestamp: Date.now() }; try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'warehouse_utilization'), newItem); setUtilizationForm(prev => ({ ...prev, capacity: '56549', used: '' })); alert("Saved"); } catch (error) { console.error(error); alert("Error"); } };
+  const handleDamageSubmit = async (e) => { e.preventDefault(); if (!user) return; if (damageForm.handling === '' || damageForm.damage === '') return; const newItem = { month: damageForm.month, handling: Number(damageForm.handling), damage: Number(damageForm.damage), timestamp: Date.now() }; try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'damage_rate'), newItem); setDamageForm(prev => ({ ...prev, handling: '', damage: '' })); alert("Saved"); } catch (error) { console.error(error); alert("Error"); } };
+  const handlePalletSubmit = async (e) => { e.preventDefault(); if (!user) return; const newItem = { month: palletForm.month, returned25: Number(palletForm.returned25) || 0, returned26: Number(palletForm.returned26) || 0, outgoing25: Number(palletForm.outgoing25) || 0, outgoing26: Number(palletForm.outgoing26) || 0, targetQty: Number(palletForm.targetQty) || 1400, timestamp: Date.now() }; try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'pallet_return'), newItem); setPalletForm(prev => ({ ...prev, returned25: '', returned26: '', outgoing25: '', outgoing26: '' })); alert("Data Pallet tersimpan"); } catch (error) { console.error("Pallet Save Error:", error); alert("Gagal menyimpan data"); } };
+
+  // Bulk Handlers (Outbound & Pallet)
+  const handleBulkParse = (text) => { setBulkText(text); if (!text) { setBulkPreview([]); return; } const lines = text.trim().split('\n'); if (lines.length < 2) return; const preview = []; const headers = lines[0].split('\t').map(h => h.trim()); const monthIndices = {}; months.forEach(m => { const idx = headers.findIndex(h => h.toLowerCase().includes(m.toLowerCase())); if (idx !== -1) monthIndices[m] = idx; }); let productColIdx = headers.findIndex(h => h.toLowerCase().includes('produk') || h.toLowerCase().includes('product')); if (productColIdx === -1) productColIdx = 1; for (let i = 1; i < lines.length; i++) { const cols = lines[i].split('\t'); if (cols.length <= productColIdx) continue; const product = cols[productColIdx]?.trim(); if (!product) continue; Object.entries(monthIndices).forEach(([month, idx]) => { if (cols.length > idx) { let valStr = cols[idx].trim(); if (valStr === '-' || valStr === '') return; valStr = valStr.replace(/\./g, ''); const qty = Number(valStr); if (!isNaN(qty) && qty > 0) { preview.push({ category: bulkCategory, product, month, qty, tempId: `${product}-${month}-${Date.now()}` }); } } }); } setBulkPreview(preview); };
+  const handleBulkSave = async () => { if (!user || bulkPreview.length === 0) return; setIsProcessing(true); try { const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'outbound_fg'); const chunks = []; for (let i = 0; i < bulkPreview.length; i += 400) { chunks.push(bulkPreview.slice(i, i + 400)); } for (const chunk of chunks) { const batch = writeBatch(db); chunk.forEach(item => { const docRef = doc(collectionRef); batch.set(docRef, { category: bulkCategory, product: item.product, month: item.month, qty: item.qty, timestamp: Date.now() }); }); await batch.commit(); } setBulkText(''); setBulkPreview([]); alert(`Saved`); } catch (error) { console.error(error); alert("Error"); } finally { setIsProcessing(false); } };
+  
+  const handlePalletBulkParse = (text) => {
+    setPalletBulkText(text);
+    if (!text) { setPalletBulkPreview([]); return; }
+    const lines = text.trim().split('\n');
+    const preview = [];
+    lines.forEach(line => {
+        const cols = line.split('\t').map(s => s.trim());
+        if (cols.length < 2) return; 
+        let mIdx = -1;
+        for(let i=0; i<3; i++) { if (months.some(m => m.toLowerCase() === (cols[i] || '').toLowerCase())) { mIdx = i; break; } }
+        if (mIdx !== -1) {
+            const monthName = months.find(m => m.toLowerCase() === cols[mIdx].toLowerCase());
+            const cleanNum = (str) => { if (!str) return 0; return Number(str.replace(/\./g, '')) || 0; };
+            // Format: No | Month | Ret25 | Ret26 | Out25 | Out26 
+            const returned25 = cleanNum(cols[mIdx+1]);
+            const returned26 = cleanNum(cols[mIdx+2]);
+            const outgoing25 = cleanNum(cols[mIdx+3]);
+            const outgoing26 = cleanNum(cols[mIdx+4]);
+            if (returned26 > 0 || outgoing26 > 0 || returned25 > 0 || outgoing25 > 0) {
+                 preview.push({ month: monthName, returned25, returned26, outgoing25, outgoing26, timestamp: Date.now() });
+            }
+        }
+    });
+    setPalletBulkPreview(preview);
+  };
+
+  const handlePalletBulkSave = async () => {
+    if (!user || palletBulkPreview.length === 0) return;
+    setIsProcessing(true);
+    try {
+        const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'pallet_return');
+        const batch = writeBatch(db);
+        palletBulkPreview.forEach(item => { const docRef = doc(collectionRef); batch.set(docRef, item); });
+        await batch.commit();
+        setPalletBulkText(''); setPalletBulkPreview([]); alert(`Saved!`);
+    } catch (error) { console.error(error); alert("Error"); } finally { setIsProcessing(false); }
+  };
+
+  // --- MASTER DATA BULK LOGIC ---
+  const handleMasterBulkParse = (text) => {
+    setMasterBulkText(text);
+    if (!text) { setMasterBulkPreview([]); return; }
+    const lines = text.trim().split('\n');
+    const preview = [];
+    // Assuming paste format: Material | Base Unit | Material Number | Base Unit of Measure | Pallet to Zak | Pallet to Tonage
+    // Example: 121-701-0002	ZAK	FG-70000002	ZAK	40	2
+    lines.forEach(line => {
+        const cols = line.split('\t').map(s => s.trim());
+        if (cols.length >= 6) {
+             const cleanNum = (str) => { if (!str) return 0; return Number(str.replace(/,/g, '.').trim()) || 0; };
+             preview.push({
+                 material: cols[0],
+                 unit: cols[1],
+                 matNum: cols[2],
+                 // col 3 is BUoM (redundant)
+                 pToZak: cleanNum(cols[4]),
+                 pToTon: cleanNum(cols[5]),
+                 timestamp: Date.now()
+             });
+        }
+    });
+    setMasterBulkPreview(preview);
+  };
+
+  const handleMasterBulkSave = async () => {
+    if (!user || masterBulkPreview.length === 0) return;
+    setIsProcessing(true);
+    try {
+        const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'master_data_pallet');
+        // Clear old data? Ideally yes, but here we append. User can clear manually or we can add delete all button.
+        // For simple usage, let's just add new.
+        const batch = writeBatch(db);
+        // Firestore batch max 500
+        const chunks = [];
+        for (let i = 0; i < masterBulkPreview.length; i += 400) { chunks.push(masterBulkPreview.slice(i, i + 400)); }
+        for (const chunk of chunks) {
+            const b = writeBatch(db);
+            chunk.forEach(item => { const docRef = doc(collectionRef); b.set(docRef, item); });
+            await b.commit();
+        }
+        setMasterBulkText(''); setMasterBulkPreview([]); alert(`Master Data Saved!`);
+    } catch (error) { console.error("Master Save Error:", error); alert("Error saving master data"); } finally { setIsProcessing(false); }
+  };
+  
+  const handleDeleteMaster = async (id) => {
+     if (!user) return;
+     try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'master_data_pallet', id)); } catch (e) { console.error(e); }
+  };
+
+
+  const handleDelete = async (id, type) => {
+    if (!user) return;
+    let collName = 'stock_accuracy';
+    if (type === 'outbound') collName = 'outbound_fg';
+    if (type === 'utilization') collName = 'warehouse_utilization';
+    if (type === 'damage') collName = 'damage_rate';
+    if (type === 'pallet') collName = 'pallet_return';
+    if (type === 'master') collName = 'master_data_pallet';
+    try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collName, id)); } catch (error) { console.error("Error deleting:", error); }
+  };
+
+  if (loading) { return ( <div className="min-h-screen flex items-center justify-center bg-slate-50"> <Loader2 className="w-10 h-10 text-blue-600 animate-spin" /> </div> ); }
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
+      <nav className="bg-white border-b border-slate-200 sticky top-0 z-10 px-4 md:px-8 py-3 shadow-sm">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div className="bg-gradient-to-br from-blue-600 to-indigo-600 text-white p-2 rounded-lg shadow-md"> <Package size={20} /> </div>
+            <div> <h1 className="text-xl font-bold text-slate-900 leading-none tracking-tight">Supply Chain Dashboard</h1> <div className="flex items-center gap-2"> <span className="text-xs text-slate-500 font-medium">Monitoring System</span> <span className="flex items-center gap-1 text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full border border-green-200"> <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div> Online </span> </div> </div>
+          </div>
+          <div className="flex bg-slate-100 p-1.5 rounded-xl border border-slate-200 overflow-x-auto">
+            {['dashboard', 'outbound', 'utilization', 'damage', 'pallet', 'admin'].map(tab => (
+              <button key={tab} onClick={() => setActiveTab(tab)} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 whitespace-nowrap ${activeTab === tab ? 'bg-white text-blue-700 shadow-sm ring-1 ring-black/5' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>
+                {tab === 'dashboard' && <LayoutDashboard size={18} />}
+                {tab === 'outbound' && <Truck size={18} />}
+                {tab === 'utilization' && <Warehouse size={18} />}
+                {tab === 'damage' && <AlertTriangle size={18} />}
+                {tab === 'pallet' && <RotateCcw size={18} />}
+                {tab === 'admin' && <Settings size={18} />}
+                {tab === 'dashboard' ? 'Stock Accuracy' : tab === 'outbound' ? 'Outbound FG' : tab === 'utilization' ? 'Warehouse' : tab === 'damage' ? 'Damage Rate' : tab === 'pallet' ? 'Pallet Return' : 'Admin Input'}
+              </button>
+            ))}
+          </div>
+        </div>
+      </nav>
+
+      <div className="max-w-7xl mx-auto p-4 md:p-8 space-y-8">
+        
+        {/* EXISTING DASHBOARDS (Stock, Outbound, Utilization, Damage) - Keeping same structure */}
+        {activeTab === 'dashboard' && ( <div className="space-y-8 animate-in fade-in duration-500"> {/* ... (existing content) ... */} <div className="flex justify-between items-center bg-white p-2 rounded-xl border border-slate-200 shadow-sm"> <div className="flex items-center gap-2 px-2"> <div className="bg-slate-100 p-2 rounded-lg"> <Filter size={18} className="text-slate-500" /> </div> <div> <span className="text-xs text-slate-400 block font-medium uppercase tracking-wider">Filter Periode</span> <select value={filterPeriod} onChange={(e) => setFilterPeriod(e.target.value)} className="bg-transparent text-sm font-bold text-slate-800 outline-none cursor-pointer hover:text-blue-600 transition-colors"> {availablePeriods.map(p => ( <option key={p} value={p}>{p}</option> ))} </select> </div> </div> <button onClick={() => window.print()} className="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"> <ClipboardList size={16} /> Cetak Laporan </button> </div> <div className="grid grid-cols-1 md:grid-cols-4 gap-4"> <StatCard title="Akurasi Global" value={`${stats.avgAccuracy}%`} subtext={stats.isTargetMet ? "Target Tercapai" : `Di Bawah Target ${TARGET_ACCURACY}%`} icon={CheckCircle} colorClass={stats.statusColor} /> <StatCard title="Target KPI" value={`${TARGET_ACCURACY}%`} subtext="Standar Minimum" icon={Target} colorClass="text-purple-600" /> <StatCard title="Net Variance" value={stats.totalVariance > 0 ? `+${stats.totalVariance}` : stats.totalVariance} subtext="Unit (Fisik - Sistem)" icon={AlertCircle} colorClass={stats.totalVariance === 0 ? "text-blue-600" : "text-rose-600"} /> <StatCard title="Total Transaksi" value={stats.totalItems} subtext={`Data Periode: ${filterPeriod}`} icon={Package} colorClass="text-indigo-600" /> </div> <div className="grid grid-cols-1 lg:grid-cols-3 gap-8"> <div className="lg:col-span-3"> <Card className="border-t-4 border-t-blue-500"> <div className="h-96 w-full p-2"> <ResponsiveContainer width="100%" height="100%"> <ComposedChart data={chartData} layout="vertical" margin={{ top: 10, right: 60, left: 20, bottom: 20 }}> <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" /> <XAxis type="number" domain={[99.8, 100.02]} tickFormatter={(value) => `${value}%`} tick={{fontSize: 12, fill: '#94a3b8', fontWeight: 500}} axisLine={false} tickLine={false} /> <YAxis dataKey="name" type="category" width={100} tick={{fill: '#334155', fontSize: 13, fontWeight: 700}} axisLine={false} tickLine={false} /> <Tooltip cursor={{fill: '#f8fafc', opacity: 0.6}} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} formatter={(value) => [<span className="font-bold text-slate-700">{value}%</span>, 'Akurasi']} /> <ReferenceLine x={TARGET_ACCURACY} stroke="#8b5cf6" strokeDasharray="4 4" strokeWidth={2} label={{ value: `Target: ${TARGET_ACCURACY}%`, position: 'top', fill: '#8b5cf6', fontSize: 12, fontWeight: 'bold', offset: 10 }} /> <Bar dataKey="accuracy" name="Hasil STO Aktual" barSize={24} radius={[0, 6, 6, 0]}> {chartData.map((entry, index) => ( <Cell key={`cell-${index}`} fill={entry.accuracy >= TARGET_ACCURACY ? '#10b981' : '#ef4444'} /> ))} <LabelList dataKey="accuracy" position="right" formatter={(val) => `${val}%`} style={{ fill: '#475569', fontSize: '12px', fontWeight: 'bold' }} offset={10} /> </Bar> </ComposedChart> </ResponsiveContainer> </div> </Card> </div> </div> </div> )}
+        {activeTab === 'outbound' && ( <div className="space-y-8 animate-in fade-in duration-500"> {/*... existing outbound content ...*/} <div className="flex justify-between items-center mb-2"> <div> <h2 className="text-2xl font-bold text-slate-900">Outbound Finish Good</h2> <p className="text-slate-500">Rekapitulasi pengeluaran barang jadi bulanan</p> </div> <div className="flex gap-2"> <button onClick={() => window.print()} className="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"> <ClipboardList size={16} /> Export Data </button> </div> </div> <div className="grid grid-cols-1 md:grid-cols-3 gap-4"> <StatCard title="Total Retail (YTD)" value={outboundGlobals.retailTotal.toLocaleString()} percentage={outboundGlobals.retailPercentage} subtext="Total unit kategori Retail" icon={ShoppingBag} colorClass="text-blue-600" /> <StatCard title="Total Project (YTD)" value={outboundGlobals.projectTotal.toLocaleString()} percentage={outboundGlobals.projectPercentage} subtext="Total unit kategori Project" icon={Briefcase} colorClass="text-purple-600" /> <StatCard title="Total Outbound (All)" value={outboundGlobals.grandTotal.toLocaleString()} subtext="Total keseluruhan barang keluar" icon={Layers} colorClass="text-emerald-600" /> </div> <Card className="overflow-hidden border-t-4 border-t-emerald-500 shadow-md"> <div className="flex items-center gap-2 mb-4"> <Layers className="text-emerald-600" size={20} /> <h3 className="text-lg font-bold text-slate-800">Rekapitulasi Global (Retail + Project)</h3> </div> <div className="overflow-x-auto"> <table className="w-full text-xs md:text-sm text-left border-collapse"> <thead className="bg-slate-100 text-slate-600 font-bold border-b-2 border-slate-200"> <tr> <th className="px-3 py-3 border-r border-slate-200 sticky left-0 bg-slate-100 z-10 w-32">Produk</th> {months.map(m => (<th key={m} className="px-2 py-3 text-center border-r border-slate-200 w-16">{m}</th>))} <th className="px-3 py-3 text-center bg-emerald-50 text-emerald-700 border-r border-slate-200 font-extrabold w-20">YTD</th> <th className="px-3 py-3 text-center bg-emerald-50 text-emerald-700 font-extrabold w-16">%</th> </tr> </thead> <tbody className="divide-y divide-slate-100"> {globalOutboundMatrix.map((row, idx) => ( <tr key={idx} className={`hover:bg-slate-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'}`}> <td className="px-3 py-2 font-semibold text-slate-700 border-r border-slate-200 sticky left-0 bg-inherit z-10">{row.product}</td> {months.map(m => (<td key={m} className="px-2 py-2 text-center text-slate-500 border-r border-slate-100 font-mono">{row[m] === 0 ? '-' : row[m].toLocaleString()}</td>))} <td className="px-3 py-2 text-right font-bold text-emerald-700 bg-emerald-50/30 border-r border-slate-200 font-mono">{row.total.toLocaleString()}</td> <td className="px-3 py-2 text-center text-xs font-bold text-slate-600 bg-emerald-50/30 relative"> <div className="absolute left-0 top-0 bottom-0 bg-emerald-200 opacity-30 transition-all" style={{ width: `${Math.min(row.percentage, 100)}%` }}></div> <span className="relative z-10">{row.percentage}%</span> </td> </tr> ))} </tbody> </table> </div> </Card> </div> )}
+        {activeTab === 'utilization' && ( <div className="space-y-8 animate-in fade-in duration-500"> {/*... existing utilization ...*/} <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200 shadow-sm"> <div> <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-2"> <Warehouse className="text-blue-600" /> Warehouse Utilization </h2> <p className="text-slate-500 text-sm">Monitoring kapasitas dan keterisian gudang</p> </div> </div> <div className="grid grid-cols-1 md:grid-cols-4 gap-4"> <StatCard title="Total Kapasitas" value={utilizationStats.totalCapacity.toLocaleString()} subtext="Kapasitas Zak (Default)" icon={Package} colorClass="text-slate-600" /> <StatCard title="Terisi (Occupied)" value={utilizationStats.totalUsed.toLocaleString()} subtext="Unit tersimpan saat ini" icon={Layers} colorClass="text-blue-600" /> <StatCard title="Sisa Ruang (Empty)" value={utilizationStats.emptySpace.toLocaleString()} subtext="Kapasitas tersedia" icon={CheckCircle} colorClass="text-emerald-600" /> <StatCard title="Utilisasi (%)" value={`${utilizationStats.utilizationRate}%`} subtext={utilizationStats.utilizationRate > 85 ? "Kritis (>85%)" : "Normal"} icon={PieIcon} colorClass={utilizationStats.utilizationRate > 85 ? "text-rose-600" : "text-emerald-600"} /> </div> <div className="grid grid-cols-1 lg:grid-cols-3 gap-8"> <div className="lg:col-span-2"> <Card> <h3 className="text-lg font-bold text-slate-800 mb-6">Tren Utilisasi Bulanan (Jan - Des)</h3> <div className="h-80 w-full"> <ResponsiveContainer width="100%" height="100%"> <BarChart data={utilizationStats.monthlyTrendData} margin={{top: 20, right: 30, left: 20, bottom: 5}}> <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /> <XAxis dataKey="name" tick={{fontSize: 12}} /> <YAxis /> <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} /> <Legend /> <Bar dataKey="Used" stackId="a" fill="#3b82f6" name="Terisi" radius={[0, 0, 4, 4]} /> <Bar dataKey="Empty" stackId="a" fill="#e2e8f0" name="Kosong" radius={[4, 4, 0, 0]} /> </BarChart> </ResponsiveContainer> </div> </Card> </div> <div className="lg:col-span-1"> <Card className="h-full flex flex-col"> <h3 className="text-lg font-bold text-slate-800 mb-4">Detail Bulanan (%)</h3> <div className="flex-1 overflow-y-auto pr-2"> <div className="space-y-4"> {utilizationStats.monthlyTrendData.map((data, idx) => ( <div key={idx} className="bg-slate-50 p-3 rounded-lg border border-slate-100"> <div className="flex justify-between items-center mb-1"> <span className="font-bold text-sm text-slate-700">{data.name}</span> <span className={`text-sm font-bold ${Number(data.utilization) > 90 ? 'text-rose-600' : 'text-slate-600'}`}> {data.utilization}% </span> </div> <div className="w-full bg-slate-200 rounded-full h-2"> <div className={`h-2 rounded-full transition-all duration-500 ${Number(data.utilization) > 90 ? 'bg-rose-500' : Number(data.utilization) > 75 ? 'bg-amber-500' : 'bg-blue-500'}`} style={{ width: `${Math.min(data.utilization, 100)}%` }}></div> </div> <div className="flex justify-between mt-1 text-[10px] text-slate-400"> <span>Used: {data.Used}</span> <span>Cap: {data.Capacity}</span> </div> </div> ))} </div> </div> </Card> </div> </div> <div className="mt-8"> <Card className="border-t-4 border-t-slate-600"> <div className="flex flex-col md:flex-row justify-between items-center mb-4 gap-4"> <div> <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"> <Table size={20} className="text-slate-500"/> Master Data: Standar Palletisasi </h3> <p className="text-sm text-slate-500">Referensi standar konversi per material</p> </div> <div className="relative"> <Search className="absolute left-3 top-2.5 text-slate-400" size={16} /> <input type="text" placeholder="Cari Material / Nomor..." className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none w-64" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} /> </div> </div> <div className="overflow-x-auto max-h-[400px] overflow-y-auto rounded-lg border border-slate-100"> <table className="w-full text-sm text-left"> <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200 sticky top-0 z-10"> <tr> <th className="px-4 py-3">Material</th> <th className="px-4 py-3">Base Unit</th> <th className="px-4 py-3">Material Number</th> <th className="px-4 py-3 text-right">Pallet to Zak</th> <th className="px-4 py-3 text-right">Pallet to Tonage</th> </tr> </thead> <tbody className="divide-y divide-slate-100"> {filteredStandards.map((item, idx) => ( <tr key={idx} className="hover:bg-slate-50"> <td className="px-4 py-2 font-mono text-slate-700">{item.material}</td> <td className="px-4 py-2 text-slate-500">{item.unit}</td> <td className="px-4 py-2 text-slate-600">{item.matNum}</td> <td className="px-4 py-2 text-right font-bold text-blue-600">{item.pToZak}</td> <td className="px-4 py-2 text-right font-mono">{item.pToTon}</td> </tr> ))} </tbody> </table> </div> </Card> </div> </div> )}
+        {activeTab === 'damage' && ( <div className="space-y-8 animate-in fade-in duration-500"> {/*... existing damage ...*/} <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200 shadow-sm"> <div> <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-2"> <AlertTriangle className="text-red-600" /> Damage Rate Produk </h2> <p className="text-slate-500 text-sm">Monitoring kerusakan produk akibat handling di W/H FG</p> </div> <div className="flex items-center gap-2"> <span className="bg-red-50 text-red-700 border border-red-200 px-3 py-1 rounded-full text-xs font-bold"> Max Toleransi: {DAMAGE_TOLERANCE}% </span> </div> </div> <div className="grid grid-cols-1 md:grid-cols-3 gap-4"> <StatCard title="Total Handling (YTD)" value={damageStats.totalHandling.toLocaleString()} subtext="Total unit yang diproses" icon={Layers} colorClass="text-slate-600" /> <StatCard title="Total Damage (YTD)" value={damageStats.totalDamage.toLocaleString()} subtext="Total unit rusak" icon={AlertCircle} colorClass="text-red-600" /> <StatCard title="Rata-rata Damage Rate" value={`${damageStats.avgRate}%`} subtext={damageStats.isSafe ? "Dalam Toleransi (Aman)" : "Melebihi Toleransi!"} icon={Target} colorClass={damageStats.isSafe ? "text-emerald-600" : "text-red-600"} /> </div> <div className="grid grid-cols-1 lg:grid-cols-3 gap-8"> <div className="lg:col-span-2"> <Card> <h3 className="text-lg font-bold text-slate-800 mb-6">Tren Damage Rate Bulanan (%)</h3> <div className="h-80 w-full"> <ResponsiveContainer width="100%" height="100%"> <ComposedChart data={damageStats.monthlyTrend} margin={{top: 20, right: 30, left: 0, bottom: 5}}> <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /> <XAxis dataKey="name" tick={{fontSize: 12}} /> <YAxis domain={[0, 'auto']} tickFormatter={(val) => `${val}%`} /> <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} formatter={(value) => [`${value}%`, 'Damage Rate']} /> <Legend /> <ReferenceLine y={DAMAGE_TOLERANCE} stroke="#ef4444" strokeDasharray="5 5" label={{ value: `Max: ${DAMAGE_TOLERANCE}%`, position: 'top', fill: '#ef4444', fontSize: 10, fontWeight: 'bold' }} /> <Line type="monotone" dataKey="rate" stroke="#3b82f6" strokeWidth={3} dot={{r: 4, strokeWidth: 2}} activeDot={{r: 6}} name="Damage Rate" /> </ComposedChart> </ResponsiveContainer> </div> </Card> </div> <div className="lg:col-span-1"> <Card className="h-full flex flex-col"> <h3 className="text-lg font-bold text-slate-800 mb-4">Riwayat Bulanan</h3> <div className="flex-1 overflow-y-auto pr-2"> <table className="w-full text-sm text-left"> <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 sticky top-0"> <tr><th className="px-2 py-2">Bulan</th><th className="px-2 py-2 text-right">Rate</th><th className="px-2 py-2 text-center">Status</th></tr> </thead> <tbody className="divide-y divide-slate-100"> {damageStats.monthlyTrend.map((item, idx) => ( <tr key={idx}> <td className="px-2 py-2 font-medium">{item.name}</td> <td className="px-2 py-2 text-right font-mono font-bold text-slate-700">{item.rate}%</td> <td className="px-2 py-2 text-center"> {item.rate > DAMAGE_TOLERANCE ? ( <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded-full font-bold">FAIL</span> ) : ( <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-bold">OK</span> )} </td> </tr> ))} </tbody> </table> </div> </Card> </div> </div> </div> )}
+
+        {/* === TAB PALLET RETURN (NEW) === */}
+        {activeTab === 'pallet' && (
+            <div className="space-y-8 animate-in fade-in duration-500">
+                <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <div>
+                        <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+                            <RotateCcw className="text-amber-600" />
+                            Pallet Return Monitoring
+                        </h2>
+                        <p className="text-slate-500 text-sm">Monitoring pengembalian pallet vs pengiriman</p>
+                    </div>
+                </div>
+
+                {/* Pallet KPI Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <StatCard 
+                        title="Total Pallet Kembali 2026 (YTD)" 
+                        value={palletStats.totalReturned26.toLocaleString()} 
+                        subtext="Unit Pallet Masuk"
+                        icon={RotateCcw}
+                        colorClass="text-blue-600"
+                    />
+                    <StatCard 
+                        title="Total Pallet Keluar 2026 (YTD)" 
+                        value={palletStats.totalOutgoing26.toLocaleString()} 
+                        subtext="Unit Pallet Dikirim (REG 3)"
+                        icon={Truck}
+                        colorClass="text-slate-600"
+                    />
+                    <StatCard 
+                        title="Target Achievement (YTD)" 
+                        value={`${palletStats.totalActualVsTarget}%`} 
+                        subtext={`Dari Target ${TARGET_PALLET_QTY.toLocaleString()} pcs/bln`}
+                        icon={Target}
+                        colorClass={palletStats.totalActualVsTarget >= 100 ? "text-emerald-600" : "text-amber-600"}
+                    />
+                    <StatCard 
+                        title="Return Rate (YTD)" 
+                        value={`${palletStats.totalActualVsOutgoing}%`} 
+                        subtext="Actual Kembali vs Keluar"
+                        icon={PieIcon}
+                        colorClass="text-purple-600"
+                    />
+                </div>
+
+                {/* Charts Area */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    {/* Main Chart: Returned vs Outgoing vs Target */}
+                    <div className="lg:col-span-2">
+                        <Card>
+                            <h3 className="text-lg font-bold text-slate-800 mb-6">Tren Pallet: Kembali vs Keluar (2026)</h3>
+                            <div className="h-80 w-full">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <ComposedChart data={palletStats.chartData} margin={{top: 20, right: 30, left: 20, bottom: 5}}>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                        <XAxis dataKey="name" tick={{fontSize: 12}} />
+                                        <YAxis />
+                                        <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                                        <Legend />
+                                        <Bar dataKey="Returned" fill="#3b82f6" name="Pallet Kembali 26" barSize={20} radius={[4, 4, 0, 0]} />
+                                        <Bar dataKey="Outgoing" fill="#94a3b8" name="Pallet Keluar 26" barSize={20} radius={[4, 4, 0, 0]} />
+                                        <Line type="monotone" dataKey="Target" stroke="#ef4444" strokeWidth={2} strokeDasharray="5 5" dot={false} name="Target Qty" />
+                                    </ComposedChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </Card>
+                    </div>
+
+                    {/* Table Summary */}
+                    <div className="lg:col-span-3">
+                         <Card className="overflow-hidden border border-slate-200">
+                            <h3 className="text-lg font-bold text-slate-800 mb-4 px-2">Detail Data Bulanan</h3>
+                            <div className="overflow-x-auto rounded-lg border border-slate-100">
+                                <table className="w-full text-xs md:text-sm text-center border-collapse">
+                                    <thead className="bg-slate-100 text-slate-700 font-bold border-b-2 border-slate-200">
+                                        <tr>
+                                            <th rowSpan="2" className="p-3 border-r border-slate-200">No</th>
+                                            <th rowSpan="2" className="p-3 border-r border-slate-200 text-left">Month</th>
+                                            <th colSpan="2" className="p-2 border-r border-slate-200 bg-gray-50">Pallet Kembali (Pcs)</th>
+                                            <th colSpan="2" className="p-2 border-r border-slate-200 bg-gray-50">Pallet Keluar REG 3 (Pcs)</th>
+                                            <th colSpan="2" className="p-2 border-r border-slate-200 bg-amber-50">Target Pallet Kembali 2026</th>
+                                            <th rowSpan="2" className="p-2 border-r border-slate-200 w-32">Actual Pallet Kembali Vs Target (%)</th>
+                                            <th rowSpan="2" className="p-2 w-32">Actual Pallet Kembali Vs Pallet Keluar (%)</th>
+                                        </tr>
+                                        <tr className="border-t border-slate-200">
+                                            <th className="p-2 border-r border-slate-200 bg-gray-50/50">2025</th>
+                                            <th className="p-2 border-r border-slate-200 bg-gray-50/50">2026</th>
+                                            <th className="p-2 border-r border-slate-200 bg-gray-50/50">2025</th>
+                                            <th className="p-2 border-r border-slate-200 bg-gray-50/50">2026</th>
+                                            <th className="p-2 border-r border-slate-200 bg-amber-50/50">Qty (Pcs)</th>
+                                            <th className="p-2 border-r border-slate-200 bg-amber-50/50">(%)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 text-slate-600">
+                                        {palletStats.tableRows.map((row, idx) => (
+                                            <tr key={idx} className="hover:bg-slate-50">
+                                                <td className="p-2 border-r border-slate-100">{row.no}</td>
+                                                <td className="p-2 border-r border-slate-100 text-left font-medium">{row.month}</td>
+                                                
+                                                <td className="p-2 border-r border-slate-100 font-mono text-slate-400">{row.returned25 ? row.returned25.toLocaleString() : '-'}</td>
+                                                <td className="p-2 border-r border-slate-100 font-mono text-blue-700 font-bold">{row.returned26.toLocaleString()}</td>
+                                                
+                                                <td className="p-2 border-r border-slate-100 font-mono text-slate-400">{row.outgoing25 ? row.outgoing25.toLocaleString() : '-'}</td>
+                                                <td className="p-2 border-r border-slate-100 font-mono text-slate-700">{row.outgoing26.toLocaleString()}</td>
+                                                
+                                                <td className="p-2 border-r border-slate-100 font-mono text-amber-700">{row.targetQty.toLocaleString()}</td>
+                                                <td className="p-2 border-r border-slate-100 font-mono">{row.targetPct}%</td>
+                                                
+                                                <td className={`p-2 border-r border-slate-100 font-bold ${row.actualVsTarget >= 100 ? 'text-emerald-600' : 'text-rose-600'}`}>{row.actualVsTarget}%</td>
+                                                <td className="p-2 font-bold">{row.actualVsOutgoing}%</td>
+                                            </tr>
+                                        ))}
+                                        {/* Total Row */}
+                                        <tr className="bg-slate-800 text-white font-bold border-t-2 border-slate-600">
+                                            <td colSpan="2" className="p-3 text-right">TOTAL</td>
+                                            {/* We only summed 26 in the basic stats, let's just display what we have or empty for 25 */}
+                                            <td className="p-3 border-r border-slate-600">-</td> 
+                                            <td className="p-3 border-r border-slate-600">{palletStats.totalReturned26.toLocaleString()}</td>
+                                            <td className="p-3 border-r border-slate-600">-</td>
+                                            <td className="p-3 border-r border-slate-600">{palletStats.totalOutgoing26.toLocaleString()}</td>
+                                            
+                                            <td className="p-3 border-r border-slate-600">{palletStats.totalTargetQty.toLocaleString()}</td>
+                                            <td className="p-3 border-r border-slate-600">{TARGET_PALLET_PCT}%</td>
+                                            <td className="p-3 border-r border-slate-600">{palletStats.totalActualVsTarget}%</td>
+                                            <td className="p-3">{palletStats.totalActualVsOutgoing}%</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </Card>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* === TAB 4: ADMIN VIEW === */}
+        {activeTab === 'admin' && (
+          <div className="animate-in slide-in-from-right duration-500 space-y-6">
+            <div className="flex justify-center">
+               <div className="bg-slate-200 p-1 rounded-lg inline-flex flex-wrap gap-1 justify-center">
+                  <button onClick={() => setAdminSection('stock')} className={`px-4 py-2 text-sm font-bold rounded-md transition-all ${adminSection === 'stock' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}> Input Stock Accuracy </button>
+                  <button onClick={() => setAdminSection('outbound')} className={`px-4 py-2 text-sm font-bold rounded-md transition-all ${adminSection === 'outbound' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}> Input Outbound FG </button>
+                  <button onClick={() => setAdminSection('utilization')} className={`px-4 py-2 text-sm font-bold rounded-md transition-all ${adminSection === 'utilization' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}> Input Utilization </button>
+                  <button onClick={() => setAdminSection('damage')} className={`px-4 py-2 text-sm font-bold rounded-md transition-all ${adminSection === 'damage' ? 'bg-white text-red-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}> Input Damage Rate </button>
+                  <button onClick={() => setAdminSection('pallet')} className={`px-4 py-2 text-sm font-bold rounded-md transition-all ${adminSection === 'pallet' ? 'bg-white text-amber-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}> Input Pallet Return </button>
+                  <button onClick={() => setAdminSection('master')} className={`px-4 py-2 text-sm font-bold rounded-md transition-all ${adminSection === 'master' ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}> Master Data </button>
+               </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            {adminSection === 'stock' && ( /* ... Existing Stock Input ... */
+            <>
+              <div className="lg:col-span-1 space-y-6"> <Card className="bg-white border-blue-100 shadow-md relative overflow-hidden"> <div className="absolute top-0 right-0 w-20 h-20 bg-blue-50 rounded-bl-full -mr-10 -mt-10 pointer-events-none"></div> <div className="flex items-center gap-3 mb-6 relative z-10"> <div className="bg-blue-600 p-2.5 rounded-xl text-white shadow-lg shadow-blue-200"> <Save size={20} /> </div> <h2 className="text-xl font-bold text-slate-800">Input Data Stok</h2> </div> <form onSubmit={handleSubmit} className="space-y-5 relative z-10"> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Periode Laporan</label> <input type="text" name="period" value={formData.period} onChange={handleInputChange} placeholder="Contoh: Desember 2023" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all placeholder:text-slate-400" required /> </div> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Kategori</label> <div className="relative"> <select name="category" value={formData.category} onChange={handleInputChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none appearance-none"> {categories.map(cat => ( <option key={cat} value={cat}>{cat}</option> ))} </select> <div className="absolute right-3 top-3.5 pointer-events-none text-slate-500"> <Filter size={16} /> </div> </div> </div> <div className="grid grid-cols-2 gap-4"> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Stok Sistem</label> <input type="number" name="system" min="0" value={formData.system} onChange={handleInputChange} placeholder="0" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-mono" required /> </div> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Stok Fisik</label> <input type="number" name="physical" min="0" value={formData.physical} onChange={handleInputChange} placeholder="0" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-mono" required /> </div> </div> <div className="pt-2"> <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white py-3 rounded-xl font-bold shadow-lg shadow-blue-200 hover:shadow-xl transition-all flex justify-center items-center gap-2 transform active:scale-95"> <Save size={18} /> Simpan ke Database </button> </div> </form> </Card> </div>
+              <div className="lg:col-span-2"> <Card className="h-full"> <div className="flex justify-between items-center mb-6"> <h3 className="text-lg font-bold text-slate-800">Database Input</h3> <div className="flex items-center gap-2"> <span className="flex h-2 w-2 rounded-full bg-green-500"></span> <span className="text-xs text-slate-500"> Synced ({data.length}) </span> </div> </div> <div className="overflow-x-auto max-h-[600px] overflow-y-auto rounded-lg border border-slate-100"> <table className="w-full text-sm text-left"> <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 sticky top-0 z-10"> <tr> <th className="px-4 py-3 bg-slate-50">Periode</th> <th className="px-4 py-3 bg-slate-50">Kategori</th> <th className="px-4 py-3 bg-slate-50 text-right">Akurasi</th> <th className="px-4 py-3 bg-slate-50 text-center">Aksi</th> </tr> </thead> <tbody className="divide-y divide-slate-100"> {data.map((item) => ( <tr key={item.id} className="hover:bg-slate-50 group"> <td className="px-4 py-3 text-slate-600 font-medium">{item.period}</td> <td className="px-4 py-3"> <span className="text-xs font-semibold bg-slate-100 px-2 py-1 rounded text-slate-600 border border-slate-200"> {item.category} </span> </td> <td className="px-4 py-3 text-right"> <span className={`font-bold px-2 py-1 rounded ${item.accuracy >= TARGET_ACCURACY ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}> {item.accuracy}% </span> </td> <td className="px-4 py-3 text-center"> <button onClick={() => handleDelete(item.id, 'stock')} className="text-slate-400 hover:text-rose-600 p-2 rounded-lg hover:bg-rose-50 transition-all opacity-0 group-hover:opacity-100 flex items-center justify-center mx-auto gap-1"> <Trash2 size={16} /> </button> </td> </tr> ))} </tbody> </table> </div> </Card> </div>
+            </>
+            )}
+
+            {adminSection === 'outbound' && ( /* ... Outbound Inputs ... */
+            <>
+              <div className="lg:col-span-1 space-y-6"> <Card className="bg-white border-indigo-100 shadow-md relative overflow-hidden"> <div className="absolute top-0 right-0 w-20 h-20 bg-indigo-50 rounded-bl-full -mr-10 -mt-10 pointer-events-none"></div> <div className="flex items-center gap-3 mb-6 relative z-10"> <div className="bg-indigo-600 p-2.5 rounded-xl text-white shadow-lg shadow-indigo-200"> <Truck size={20} /> </div> <h2 className="text-xl font-bold text-slate-800">Input Manual</h2> </div> <form onSubmit={handleOutboundSubmit} className="space-y-4 relative z-10"> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Kategori Outbound</label> <select name="category" value={outboundForm.category} onChange={handleOutboundChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"> {outboundCategories.map(c => <option key={c} value={c}>{c}</option>)} </select> </div> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Pilih Produk</label> <select name="product" value={outboundForm.product} onChange={handleOutboundChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"> {outboundProductsList.map(p => <option key={p} value={p}>{p}</option>)} </select> </div> <div className="grid grid-cols-2 gap-4"> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Bulan</label> <select name="month" value={outboundForm.month} onChange={handleOutboundChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"> {months.map(m => <option key={m} value={m}>{m}</option>)} </select> </div> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Qty</label> <input type="number" name="qty" min="0" value={outboundForm.qty} onChange={handleOutboundChange} placeholder="0" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-mono" required /> </div> </div> <div className="pt-2"> <button type="submit" className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white py-3 rounded-xl font-bold shadow-lg shadow-indigo-200 hover:shadow-xl transition-all flex justify-center items-center gap-2 transform active:scale-95"> <Save size={18} /> Simpan </button> </div> </form> </Card> <Card className="bg-white border-green-100 shadow-md relative overflow-hidden"> <div className="flex items-center gap-3 mb-6 relative z-10"> <div className="bg-green-600 p-2.5 rounded-xl text-white shadow-lg shadow-green-200"> <FileSpreadsheet size={20} /> </div> <h2 className="text-xl font-bold text-slate-800">Bulk Upload (Excel)</h2> </div> <div className="space-y-4 relative z-10"> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Upload untuk Kategori:</label> <div className="flex bg-slate-100 p-1 rounded-lg"> {outboundCategories.map(cat => ( <button key={cat} onClick={() => setBulkCategory(cat)} className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${bulkCategory === cat ? 'bg-white text-green-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}> {cat} </button> ))} </div> </div> <div> <textarea value={bulkText} onChange={(e) => handleBulkParse(e.target.value)} placeholder={`Paste tabel Excel di sini...\nFormat: No | Produk | Jan | Feb ...`} className="w-full h-32 p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-green-500 outline-none font-mono text-xs whitespace-pre" /> </div> <div className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border border-slate-200"> <span className="text-xs font-semibold text-slate-600"> Preview: {bulkPreview.length} items ({bulkCategory}) </span> </div> <div className="pt-2"> <button onClick={handleBulkSave} disabled={bulkPreview.length === 0 || isProcessing} className={`w-full py-3 rounded-xl font-bold shadow-lg transition-all flex justify-center items-center gap-2 transform active:scale-95 ${bulkPreview.length > 0 ? 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white shadow-green-200 hover:shadow-xl' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}> {isProcessing ? <Loader2 size={18} className="animate-spin"/> : <UploadCloud size={18} />} {isProcessing ? 'Simpan Bulk' : 'Upload ke Database'} </button> </div> </div> </Card> </div>
+              <div className="lg:col-span-2"> <Card className="h-full flex flex-col"> <div className="flex justify-between items-center mb-4"> <h3 className="text-lg font-bold text-slate-800">Preview & History</h3> {bulkPreview.length > 0 && ( <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded"> Preview: {bulkPreview.length} Baris </span> )} </div> {bulkPreview.length > 0 && ( <div className="mb-6 overflow-x-auto rounded-lg border border-green-200 bg-green-50/30 max-h-[300px]"> <table className="w-full text-xs text-left"> <thead className="bg-green-100 text-green-800 font-semibold sticky top-0"> <tr> <th className="px-3 py-2">Kategori</th> <th className="px-3 py-2">Produk</th> <th className="px-3 py-2">Bulan</th> <th className="px-3 py-2 text-right">Qty</th> </tr> </thead> <tbody> {bulkPreview.map((item, idx) => ( <tr key={idx} className="border-b border-green-100"> <td className="px-3 py-1 font-bold">{item.category}</td> <td className="px-3 py-1">{item.product}</td> <td className="px-3 py-1">{item.month}</td> <td className="px-3 py-1 text-right">{item.qty}</td> </tr> ))} </tbody> </table> </div> )} <div className="pt-4 border-t border-slate-100 flex-1 flex flex-col"> <h4 className="text-sm font-bold text-slate-700 mb-2">Riwayat Data Tersimpan (All):</h4> <div className="overflow-x-auto flex-1 rounded border border-slate-200 max-h-[400px]"> <table className="w-full text-xs text-left"> <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 sticky top-0"> <tr> <th className="px-3 py-2">Kategori</th> <th className="px-3 py-2">Produk</th> <th className="px-3 py-2">Bulan</th> <th className="px-3 py-2 text-right">Qty</th> <th className="px-3 py-2 text-center">Aksi</th> </tr> </thead> <tbody className="divide-y divide-slate-100"> {outboundData.map((item) => ( <tr key={item.id} className="hover:bg-slate-50"> <td className="px-3 py-1.5"> <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${item.category === 'Project' ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}> {item.category || 'Retail'} </span> </td> <td className="px-3 py-1.5">{item.product}</td> <td className="px-3 py-1.5 text-indigo-600 font-medium">{item.month}</td> <td className="px-3 py-1.5 text-right">{item.qty}</td> <td className="px-3 py-1.5 text-center"> <button onClick={() => handleDelete(item.id, 'outbound')} className="text-red-400 hover:text-red-600"><Trash2 size={14}/></button> </td> </tr> ))} </tbody> </table> </div> </div> </Card> </div>
+            </>
+            )}
+
+            {adminSection === 'utilization' && ( /* ... Utilization Inputs ... */
+            <>
+              <div className="lg:col-span-1 space-y-6"> <Card className="bg-white border-emerald-100 shadow-md relative overflow-hidden"> <div className="absolute top-0 right-0 w-20 h-20 bg-emerald-50 rounded-bl-full -mr-10 -mt-10 pointer-events-none"></div> <div className="flex items-center gap-3 mb-6 relative z-10"> <div className="bg-emerald-600 p-2.5 rounded-xl text-white shadow-lg shadow-emerald-200"> <Warehouse size={20} /> </div> <h2 className="text-xl font-bold text-slate-800">Input Utilisasi</h2> </div> <form onSubmit={handleUtilizationSubmit} className="space-y-4 relative z-10"> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Bulan Data</label> <select name="period" value={utilizationForm.period} onChange={handleUtilizationChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"> {months.map(m => <option key={m} value={m}>{m}</option>)} </select> </div> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Pilih Zona</label> <select name="zone" value={utilizationForm.zone} onChange={handleUtilizationChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"> {warehouseZones.map(z => <option key={z} value={z}>{z}</option>)} </select> </div> <div className="grid grid-cols-2 gap-4"> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Total Kapasitas</label> <input type="number" name="capacity" min="0" value={utilizationForm.capacity} onChange={handleUtilizationChange} placeholder="0" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none font-mono" required /> </div> <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Terisi (Used)</label> <input type="number" name="used" min="0" value={utilizationForm.used} onChange={handleUtilizationChange} placeholder="0" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none font-mono" required /> </div> </div> <div className="pt-2"> <button type="submit" className="w-full bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-700 hover:to-green-700 text-white py-3 rounded-xl font-bold shadow-lg shadow-emerald-200 hover:shadow-xl transition-all flex justify-center items-center gap-2 transform active:scale-95"> <Save size={18} /> Simpan Data </button> </div> </form> </Card> </div>
+              <div className="lg:col-span-2"> <Card className="h-full"> <h3 className="text-lg font-bold text-slate-800 mb-4">Riwayat Input Utilisasi</h3> <div className="overflow-x-auto rounded-lg border border-slate-100 max-h-[600px] overflow-y-auto"> <table className="w-full text-sm text-left"> <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 sticky top-0 z-10"> <tr> <th className="px-4 py-3">Periode</th> <th className="px-4 py-3">Zona</th> <th className="px-4 py-3 text-right">Kapasitas</th> <th className="px-4 py-3 text-right">Terisi</th> <th className="px-4 py-3 text-right">Utilisasi</th> <th className="px-4 py-3 text-center">Aksi</th> </tr> </thead> <tbody className="divide-y divide-slate-100"> {utilizationData.map((item) => { const util = item.capacity > 0 ? (item.used / item.capacity * 100).toFixed(1) : 0; return ( <tr key={item.id} className="hover:bg-slate-50"> <td className="px-4 py-3 font-medium text-slate-600">{item.period}</td> <td className="px-4 py-3"> <span className="bg-emerald-50 text-emerald-700 px-2 py-1 rounded text-xs font-bold">{item.zone}</span> </td> <td className="px-4 py-3 text-right font-mono">{item.capacity}</td> <td className="px-4 py-3 text-right font-mono">{item.used}</td> <td className="px-4 py-3 text-right font-bold text-slate-700">{util}%</td> <td className="px-4 py-3 text-center"> <button onClick={() => handleDelete(item.id, 'utilization')} className="text-red-400 hover:text-red-600"><Trash2 size={14}/></button> </td> </tr> ); })} </tbody> </table> </div> </Card> </div>
+            </>
+            )}
+
+            {adminSection === 'damage' && ( /* ... Damage Inputs ... */
+            <>
+                <div className="lg:col-span-1 space-y-6"> <Card className="bg-white border-red-100 shadow-md relative overflow-hidden"> <div className="absolute top-0 right-0 w-20 h-20 bg-red-50 rounded-bl-full -mr-10 -mt-10 pointer-events-none"></div> <div className="flex items-center gap-3 mb-6 relative z-10"> <div className="bg-red-600 p-2.5 rounded-xl text-white shadow-lg shadow-red-200"> <AlertTriangle size={20} /> </div> <h2 className="text-xl font-bold text-slate-800">Input Damage Rate</h2> </div> <form onSubmit={handleDamageSubmit} className="space-y-4 relative z-10"> 
+                     <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Bulan Laporan</label> <select name="month" value={damageForm.month} onChange={handleDamageChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-red-500 outline-none"> {months.map(m => <option key={m} value={m}>{m}</option>)} </select> </div> 
+                     <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Total Handling (Qty)</label> <input type="number" name="handling" min="0" value={damageForm.handling} onChange={handleDamageChange} placeholder="Total barang diproses" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-red-500 outline-none font-mono" required /> </div> 
+                     <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Total Damage (Qty)</label> <input type="number" name="damage" min="0" value={damageForm.damage} onChange={handleDamageChange} placeholder="Total barang rusak" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-red-500 outline-none font-mono" required /> </div> 
+                     <div className="pt-2"> <button type="submit" className="w-full bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white py-3 rounded-xl font-bold shadow-lg shadow-red-200 hover:shadow-xl transition-all flex justify-center items-center gap-2 transform active:scale-95"> <Save size={18} /> Simpan Data </button> </div> 
+                   </form>
+                 </Card>
+                </div>
+                <div className="lg:col-span-2"> <Card className="h-full"> <h3 className="text-lg font-bold text-slate-800 mb-4">Riwayat Input Damage</h3> <div className="overflow-x-auto rounded-lg border border-slate-100 max-h-[600px] overflow-y-auto"> <table className="w-full text-sm text-left"> <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 sticky top-0 z-10"> <tr> <th className="px-4 py-3">Bulan</th> <th className="px-4 py-3 text-right">Handling</th> <th className="px-4 py-3 text-right">Damage</th> <th className="px-4 py-3 text-right">Rate (%)</th> <th className="px-4 py-3 text-center">Aksi</th> </tr> </thead> <tbody className="divide-y divide-slate-100"> {damageData.map((item) => { const rate = item.handling > 0 ? ((item.damage / item.handling) * 100).toFixed(3) : 0; return ( <tr key={item.id} className="hover:bg-slate-50"> <td className="px-4 py-3 font-medium text-slate-600">{item.month}</td> <td className="px-4 py-3 text-right font-mono">{item.handling}</td> <td className="px-4 py-3 text-right font-mono text-red-600">{item.damage}</td> <td className="px-4 py-3 text-right font-bold text-slate-700">{rate}%</td> <td className="px-4 py-3 text-center"> <button onClick={() => handleDelete(item.id, 'damage')} className="text-red-400 hover:text-red-600"><Trash2 size={14}/></button> </td> </tr> ); })} </tbody> </table> </div> </Card> </div>
+            </>
+            )}
+
+            {/* --- ADMIN: PALLET INPUT (NEW) --- */}
+            {adminSection === 'pallet' && (
+                <>
+                <div className="lg:col-span-1 space-y-6">
+                 {/* Manual Input Pallet - Updated for 4 fields */}
+                 <Card className="bg-white border-amber-100 shadow-md relative overflow-hidden">
+                   <div className="absolute top-0 right-0 w-20 h-20 bg-amber-50 rounded-bl-full -mr-10 -mt-10 pointer-events-none"></div>
+                   <div className="flex items-center gap-3 mb-6 relative z-10"> <div className="bg-amber-600 p-2.5 rounded-xl text-white shadow-lg shadow-amber-200"> <RotateCcw size={20} /> </div> <h2 className="text-xl font-bold text-slate-800">Input Manual</h2> </div>
+                   <form onSubmit={handlePalletSubmit} className="space-y-4 relative z-10"> 
+                     <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Bulan</label> <select name="month" value={palletForm.month} onChange={handlePalletChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none"> {months.map(m => <option key={m} value={m}>{m}</option>)} </select> </div> 
+                     <div className="grid grid-cols-2 gap-4">
+                        <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Kembali 2025</label> <input type="number" name="returned25" min="0" value={palletForm.returned25} onChange={handlePalletChange} placeholder="0" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none font-mono" /> </div> 
+                        <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Kembali 2026</label> <input type="number" name="returned26" min="0" value={palletForm.returned26} onChange={handlePalletChange} placeholder="0" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none font-mono" /> </div> 
+                     </div>
+                     <div className="grid grid-cols-2 gap-4">
+                        <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Keluar 2025</label> <input type="number" name="outgoing25" min="0" value={palletForm.outgoing25} onChange={handlePalletChange} placeholder="0" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none font-mono" /> </div> 
+                        <div> <label className="block text-sm font-semibold text-slate-700 mb-1.5">Keluar 2026</label> <input type="number" name="outgoing26" min="0" value={palletForm.outgoing26} onChange={handlePalletChange} placeholder="0" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none font-mono" /> </div> 
+                     </div>
+                     <div className="pt-2"> <button type="submit" className="w-full bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white py-3 rounded-xl font-bold shadow-lg shadow-amber-200 hover:shadow-xl transition-all flex justify-center items-center gap-2 transform active:scale-95"> <Save size={18} /> Simpan Data </button> </div> 
+                   </form>
+                 </Card>
+                 
+                 {/* Bulk Upload Pallet - Updated description */}
+                 <Card className="bg-white border-blue-100 shadow-md relative overflow-hidden">
+                   <div className="flex items-center gap-3 mb-6 relative z-10"> <div className="bg-blue-600 p-2.5 rounded-xl text-white shadow-lg shadow-blue-200"> <FileSpreadsheet size={20} /> </div> <h2 className="text-xl font-bold text-slate-800">Bulk Upload (Excel)</h2> </div>
+                   <div className="space-y-4 relative z-10">
+                     <div>
+                       <label className="block text-sm font-semibold text-slate-700 mb-1.5">Paste Tabel Excel di Sini</label>
+                       <p className="text-xs text-slate-500 mb-2">Format: No | Bulan | Ret 25 | Ret 26 | Out 25 | Out 26 ...</p>
+                       <textarea value={palletBulkText} onChange={(e) => handlePalletBulkParse(e.target.value)} placeholder={`Contoh:\n1\tJan\t0\t1.624\t0\t5.275\n2\tFeb\t0\t1.837\t0\t4.983`} className="w-full h-32 p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-mono text-xs whitespace-pre" />
+                     </div>
+                     <div className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border border-slate-200"> <span className="text-xs font-semibold text-slate-600"> Preview: {palletBulkPreview.length} baris data </span> </div>
+                     <div className="pt-2"> <button onClick={handlePalletBulkSave} disabled={palletBulkPreview.length === 0 || isProcessing} className={`w-full py-3 rounded-xl font-bold shadow-lg transition-all flex justify-center items-center gap-2 transform active:scale-95 ${palletBulkPreview.length > 0 ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-blue-200 hover:shadow-xl' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}> {isProcessing ? <Loader2 size={18} className="animate-spin"/> : <UploadCloud size={18} />} {isProcessing ? 'Simpan Bulk' : 'Upload ke Database'} </button> </div>
+                   </div>
+                 </Card>
+                </div>
+                
+                <div className="lg:col-span-2">
+                  <Card className="h-full flex flex-col">
+                    <h3 className="text-lg font-bold text-slate-800 mb-4">Preview & History</h3>
+                    
+                    {/* Preview Area */}
+                    {palletBulkPreview.length > 0 && (
+                        <div className="mb-6 overflow-x-auto rounded-lg border border-blue-200 bg-blue-50/30 max-h-[300px]">
+                             <table className="w-full text-xs text-left">
+                                <thead className="bg-blue-100 text-blue-800 font-semibold sticky top-0">
+                                <tr>
+                                    <th className="px-3 py-2">Bulan</th>
+                                    <th className="px-3 py-2 text-right">Ret '25</th>
+                                    <th className="px-3 py-2 text-right">Ret '26</th>
+                                    <th className="px-3 py-2 text-right">Out '25</th>
+                                    <th className="px-3 py-2 text-right">Out '26</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                {palletBulkPreview.map((item, idx) => (
+                                    <tr key={idx} className="border-b border-blue-100">
+                                    <td className="px-3 py-1 font-bold">{item.month}</td>
+                                    <td className="px-3 py-1 text-right text-slate-400">{item.returned25}</td>
+                                    <td className="px-3 py-1 text-right font-bold">{item.returned26}</td>
+                                    <td className="px-3 py-1 text-right text-slate-400">{item.outgoing25}</td>
+                                    <td className="px-3 py-1 text-right font-bold">{item.outgoing26}</td>
+                                    </tr>
+                                ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                    
+                    <div className="overflow-x-auto rounded-lg border border-slate-100 max-h-[600px] overflow-y-auto">
+                      <table className="w-full text-sm text-left">
+                        <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 sticky top-0 z-10"> <tr> <th className="px-4 py-3">Bulan</th> <th className="px-4 py-3 text-right">Ret '26</th> <th className="px-4 py-3 text-right">Out '26</th> <th className="px-4 py-3 text-center">Aksi</th> </tr> </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {palletReturnData.map((item) => ( 
+                                <tr key={item.id} className="hover:bg-slate-50"> 
+                                    <td className="px-4 py-3 font-medium text-slate-600">{item.month}</td> 
+                                    <td className="px-4 py-3 text-right font-mono text-blue-600">{item.returned26 || item.returned}</td> 
+                                    <td className="px-4 py-3 text-right font-mono text-slate-600">{item.outgoing26 || item.outgoing}</td> 
+                                    <td className="px-4 py-3 text-center"> <button onClick={() => handleDelete(item.id, 'pallet')} className="text-red-400 hover:text-red-600"><Trash2 size={14}/></button> </td> 
+                                </tr> 
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+                </div>
+                </>
+            )}
+
+            {/* --- ADMIN: MASTER DATA INPUT (NEW) --- */}
+            {adminSection === 'master' && (
+                <>
+                <div className="lg:col-span-1 space-y-6">
+                 <Card className="bg-white border-teal-100 shadow-md relative overflow-hidden">
+                   <div className="flex items-center gap-3 mb-6 relative z-10"> <div className="bg-teal-600 p-2.5 rounded-xl text-white shadow-lg shadow-teal-200"> <Database size={20} /> </div> <h2 className="text-xl font-bold text-slate-800">Master Data Pallet</h2> </div>
+                   <div className="space-y-4 relative z-10">
+                     <div>
+                       <label className="block text-sm font-semibold text-slate-700 mb-1.5">Paste Tabel Excel di Sini</label>
+                       <p className="text-xs text-slate-500 mb-2">Format: Material | Base Unit | Mat Num | BUoM | Pallet to Zak | Pallet to Ton</p>
+                       <textarea value={masterBulkText} onChange={(e) => handleMasterBulkParse(e.target.value)} placeholder={`Contoh:\n121-701-0002\tZAK\tFG-70000002\tZAK\t40\t2\n...`} className="w-full h-64 p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-teal-500 outline-none font-mono text-xs whitespace-pre" />
+                     </div>
+                     <div className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border border-slate-200"> <span className="text-xs font-semibold text-slate-600"> Preview: {masterBulkPreview.length} baris data </span> </div>
+                     <div className="pt-2"> <button onClick={handleMasterBulkSave} disabled={masterBulkPreview.length === 0 || isProcessing} className={`w-full py-3 rounded-xl font-bold shadow-lg transition-all flex justify-center items-center gap-2 transform active:scale-95 ${masterBulkPreview.length > 0 ? 'bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white shadow-teal-200 hover:shadow-xl' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}> {isProcessing ? <Loader2 size={18} className="animate-spin"/> : <UploadCloud size={18} />} {isProcessing ? 'Simpan Master Data' : 'Upload ke Database'} </button> </div>
+                   </div>
+                 </Card>
+                </div>
+                
+                <div className="lg:col-span-2">
+                  <Card className="h-full flex flex-col">
+                    <h3 className="text-lg font-bold text-slate-800 mb-4">Preview Master Data</h3>
+                    <div className="overflow-x-auto rounded-lg border border-teal-100 max-h-[600px] overflow-y-auto">
+                        <table className="w-full text-xs text-left">
+                            <thead className="bg-teal-100 text-teal-800 font-semibold sticky top-0">
+                            <tr>
+                                <th className="px-3 py-2">Material</th>
+                                <th className="px-3 py-2">Unit</th>
+                                <th className="px-3 py-2">Mat Num</th>
+                                <th className="px-3 py-2 text-right">P-to-Zak</th>
+                                <th className="px-3 py-2 text-right">P-to-Ton</th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            {masterBulkPreview.length > 0 ? masterBulkPreview.map((item, idx) => (
+                                <tr key={idx} className="border-b border-teal-50 hover:bg-teal-50">
+                                    <td className="px-3 py-1 font-mono">{item.material}</td>
+                                    <td className="px-3 py-1">{item.unit}</td>
+                                    <td className="px-3 py-1 font-mono">{item.matNum}</td>
+                                    <td className="px-3 py-1 text-right">{item.pToZak}</td>
+                                    <td className="px-3 py-1 text-right">{item.pToTon}</td>
+                                </tr>
+                            )) : (
+                                <tr><td colSpan="5" className="text-center py-8 text-slate-400">Silakan paste data di kolom kiri</td></tr>
+                            )}
+                            </tbody>
+                        </table>
+                    </div>
+                  </Card>
+                </div>
+                </>
+            )}
+
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
