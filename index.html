@@ -271,7 +271,11 @@
             const totalSystem = dashboardData.reduce((sum, item) => sum + Number(item.system), 0);
             const totalPhysical = dashboardData.reduce((sum, item) => sum + Number(item.physical), 0);
             const totalAbsVariance = dashboardData.reduce((sum, item) => sum + Math.abs(item.variance), 0);
-            const globalAccuracy = totalSystem === 0 ? 0 : ((1 - (totalAbsVariance / totalSystem)) * 100);
+            
+            // MODIFIED: Mengatur Akurasi Global menjadi 0% sesuai permintaan user
+            const globalAccuracy = 0; 
+            // Logic asli (dinonaktifkan): const globalAccuracy = totalSystem === 0 ? 0 : ((1 - (totalAbsVariance / totalSystem)) * 100);
+            
             const isTargetMet = globalAccuracy >= TARGET_ACCURACY;
             return {
               avgAccuracy: globalAccuracy.toFixed(3),
