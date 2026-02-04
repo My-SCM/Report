@@ -398,12 +398,15 @@
             const latestSnapshot = utilizationData.sort((a, b) => b.timestamp - a.timestamp)[0] || { capacity: 56549, used: 0 };
             const totalCapacity = Number(latestSnapshot.capacity) || 56549;
             const totalUsed = Number(latestSnapshot.used) || 0;
-            const utilizationRate = totalCapacity === 0 ? 0 : ((totalUsed / totalCapacity) * 100).toFixed(1);
+            // Modified: Pembulatan ke bilangan bulat (Math.round)
+            const utilizationRate = totalCapacity === 0 ? 0 : Math.round((totalUsed / totalCapacity) * 100);
+            
             const monthlyTrendData = months.map(m => {
                 const entry = utilizationData.filter(d => d.period && d.period.includes(m)).sort((a, b) => b.timestamp - a.timestamp)[0];
                 const cap = entry ? Number(entry.capacity) : 56549; 
                 const us = entry ? Number(entry.used) : 0;
-                return { name: m, Used: us, Empty: cap > us ? cap - us : 0, Capacity: cap, utilization: cap === 0 ? 0 : (us / cap * 100).toFixed(1) };
+                // Modified: Pembulatan ke bilangan bulat (Math.round)
+                return { name: m, Used: us, Empty: cap > us ? cap - us : 0, Capacity: cap, utilization: cap === 0 ? 0 : Math.round(us / cap * 100) };
             });
             return { totalCapacity, totalUsed, utilizationRate, emptySpace: totalCapacity - totalUsed, monthlyTrendData };
           }, [utilizationData]);
