@@ -132,6 +132,7 @@
           const [filterPeriod, setFilterPeriod] = useState('Semua');
           const [searchTerm, setSearchTerm] = useState('');
           const [isProcessing, setIsProcessing] = useState(false);
+          const [outboundSubTab, setOutboundSubTab] = useState('Retail'); // State untuk sub-menu outbound
           
           // --- ADMIN AUTH STATE ---
           const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
@@ -272,9 +273,7 @@
             const totalPhysical = dashboardData.reduce((sum, item) => sum + Number(item.physical), 0);
             const totalAbsVariance = dashboardData.reduce((sum, item) => sum + Math.abs(item.variance), 0);
             
-            // MODIFIED: Mengatur Akurasi Global menjadi 0% sesuai permintaan user
             const globalAccuracy = 0; 
-            // Logic asli (dinonaktifkan): const globalAccuracy = totalSystem === 0 ? 0 : ((1 - (totalAbsVariance / totalSystem)) * 100);
             
             const isTargetMet = globalAccuracy >= TARGET_ACCURACY;
             return {
@@ -330,6 +329,69 @@
             });
             return Object.values(matrix).map(item => ({ ...item, percentage: outboundGlobals.grandTotal === 0 ? 0 : ((item.total / outboundGlobals.grandTotal) * 100).toFixed(1) }));
           }, [outboundData, outboundGlobals.grandTotal]);
+
+          // --- New Logic: Sub-Category Matrix (Retail/Project) ---
+          const subCategoryMatrix = useMemo(() => {
+            const matrix = {};
+            outboundProductsList.forEach(p => { 
+                matrix[p] = { product: p, total: 0 }; 
+                months.forEach(m => matrix[p][m] = 0); 
+            });
+            
+            const filteredData = outboundData.filter(item => (item.category || 'Retail') === outboundSubTab);
+            
+            filteredData.forEach(item => {
+                if (!matrix[item.product]) { 
+                    matrix[item.product] = { product: item.product, total: 0 }; 
+                    months.forEach(m => matrix[item.product][m] = 0); 
+                }
+                matrix[item.product][item.month] += Number(item.qty);
+                matrix[item.product].total += Number(item.qty);
+            });
+
+            const subTotal = filteredData.reduce((acc, curr) => acc + Number(curr.qty), 0);
+
+            return Object.values(matrix)
+                .filter(r => r.total > 0) // Hanya tampilkan yang ada datanya untuk sub-tabel
+                .map(item => ({ 
+                    ...item, 
+                    percentage: subTotal === 0 ? 0 : ((item.total / subTotal) * 100).toFixed(1) 
+                }))
+                .sort((a,b) => b.total - a.total);
+          }, [outboundData, outboundSubTab]);
+
+          // --- New Logic: Top 10 & Trend ---
+          const topProductStats = useMemo(() => {
+            const totals = {};
+            outboundData.forEach(item => {
+                totals[item.product] = (totals[item.product] || 0) + Number(item.qty);
+            });
+            
+            const top10 = Object.entries(totals)
+                .map(([name, value]) => ({ name, value }))
+                .sort((a, b) => b.value - a.value)
+                .slice(0, 10);
+                
+            const top10Names = top10.map(t => t.name);
+            const top5Names = top10Names.slice(0, 5);
+            
+            const trendData = months.map(m => {
+                const row = { name: m };
+                top5Names.forEach(p => row[p] = 0);
+                return row;
+            });
+            
+            outboundData.forEach(item => {
+                if (top5Names.includes(item.product)) {
+                    const mIndex = months.indexOf(item.month);
+                    if (mIndex > -1) {
+                        trendData[mIndex][item.product] += Number(item.qty);
+                    }
+                }
+            });
+            
+            return { top10, trendData, top5Names };
+          }, [outboundData]);
 
           // --- Utilization Logic ---
           const utilizationStats = useMemo(() => {
@@ -681,6 +743,85 @@
                         </table>
                       </div>
                     </Card>
+
+                    <div className="grid grid-cols-1 gap-6 mt-8">
+                        <div className="flex items-center gap-4 bg-white p-2 rounded-lg border w-fit">
+                            <button 
+                                onClick={() => setOutboundSubTab('Retail')}
+                                className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${outboundSubTab === 'Retail' ? 'bg-blue-600 text-white shadow' : 'text-slate-500 hover:bg-slate-100'}`}
+                            >
+                                Retail Breakdown
+                            </button>
+                            <button 
+                                onClick={() => setOutboundSubTab('Project')}
+                                className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${outboundSubTab === 'Project' ? 'bg-purple-600 text-white shadow' : 'text-slate-500 hover:bg-slate-100'}`}
+                            >
+                                Project Breakdown
+                            </button>
+                        </div>
+                        
+                        <Card className={`overflow-hidden border-t-4 ${outboundSubTab === 'Retail' ? 'border-t-blue-500' : 'border-t-purple-500'} shadow-md`}>
+                            <h3 className="font-bold text-lg p-4 pb-0 text-slate-800">Detail Outbound: {outboundSubTab}</h3>
+                            <div className="overflow-x-auto p-4">
+                                <table className="w-full text-xs md:text-sm text-left border-collapse">
+                                  <thead className="bg-slate-100 font-bold border-b-2">
+                                    <tr><th className="px-3 py-3 border-r w-32 sticky left-0 bg-slate-100">Produk</th>{months.map(m=><th key={m} className="px-2 text-center border-r">{m}</th>)}<th className="px-3 text-center bg-slate-200 border-r">Total</th><th className="px-3 text-center bg-slate-200">%</th></tr>
+                                  </thead>
+                                  <tbody className="divide-y">
+                                    {subCategoryMatrix.map((row,i)=>(<tr key={i} className={`hover:bg-slate-50 ${i%2===0?'bg-white':'bg-slate-50/30'}`}><td className="px-3 py-2 font-semibold border-r sticky left-0 bg-inherit">{row.product}</td>{months.map(m=><td key={m} className="px-2 text-center border-r">{row[m]===0?'-':row[m].toLocaleString()}</td>)}<td className="px-3 text-right font-bold bg-slate-100 border-r">{row.total.toLocaleString()}</td><td className="px-3 text-center bg-slate-100">{row.percentage}%</td></tr>))}
+                                  </tbody>
+                                </table>
+                            </div>
+                        </Card>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-4">
+                        <Card className="border-t-4 border-t-indigo-500">
+                            <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
+                                <TrendingUp size={20} /> Top 10 Produk (Volume)
+                            </h3>
+                            <div className="h-80 w-full">
+                                <ResponsiveContainer>
+                                    <BarChart layout="vertical" data={topProductStats.top10} margin={{top:5, right:30, left:20, bottom:5}}>
+                                        <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} />
+                                        <XAxis type="number" hide />
+                                        <YAxis dataKey="name" type="category" width={80} tick={{fontSize:12, fontWeight:600}} />
+                                        <Tooltip cursor={{fill: 'transparent'}} />
+                                        <Bar dataKey="value" fill="#6366f1" radius={[0, 4, 4, 0]} barSize={20}>
+                                            <LabelList dataKey="value" position="right" style={{fontSize:12, fill:'#64748b', fontWeight:'bold'}} />
+                                        </Bar>
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </Card>
+                        
+                        <Card className="border-t-4 border-t-pink-500">
+                            <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
+                                <TrendingUp size={20} /> Tren Bulanan (Top 5 Produk)
+                            </h3>
+                            <div className="h-80 w-full">
+                                <ResponsiveContainer>
+                                    <LineChart data={topProductStats.trendData} margin={{top:5, right:10, left:0, bottom:5}}>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                        <XAxis dataKey="name" style={{fontSize:12}} />
+                                        <YAxis style={{fontSize:12}} />
+                                        <Tooltip />
+                                        <Legend />
+                                        {topProductStats.top5Names.map((name, index) => (
+                                            <Line 
+                                                key={name} 
+                                                type="monotone" 
+                                                dataKey={name} 
+                                                stroke={['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6'][index % 5]} 
+                                                strokeWidth={2} 
+                                                dot={false}
+                                            />
+                                        ))}
+                                    </LineChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </Card>
+                    </div>
                   </div>
                 )}
 
@@ -1010,7 +1151,7 @@
                                             onClick={() => bulkCategory === 'Pallet' ? saveBatchToFirebase('pallet_return', palletBulkPreview, 'Bulk Pallet Tersimpan!', () => {setPalletBulkPreview([]); setPalletBulkText('');}) : saveBatchToFirebase('outbound_fg', bulkPreview, 'Bulk Outbound Tersimpan!', () => {setBulkPreview([]); setBulkText('');})}
                                             disabled={isProcessing || (bulkCategory === 'Pallet' ? palletBulkPreview.length === 0 : bulkPreview.length === 0)}
                                             className="mt-4 w-full bg-slate-800 disabled:bg-slate-300 text-white font-bold p-2.5 rounded-lg hover:bg-slate-900 transition-colors flex items-center justify-center gap-2"
-                                         >
+                                        >
                                             {isProcessing ? <Loader2 className="animate-spin"/> : <UploadCloud size={18}/>}
                                             Upload {bulkCategory === 'Pallet' ? palletBulkPreview.length : bulkPreview.length} Baris Data
                                          </button>
