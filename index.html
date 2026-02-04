@@ -8,7 +8,7 @@
     <!-- 1. Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- 2. Import Map (Diperbaiki: Menambahkan 'react-dom' agar Recharts bisa berjalan) -->
+    <!-- 2. Import Map -->
     <script type="importmap">
     {
       "imports": {
@@ -24,7 +24,7 @@
     }
     </script>
 
-    <!-- 3. Babel (Versi dipin ke 7.24.4 untuk stabilitas) -->
+    <!-- 3. Babel -->
     <script src="https://unpkg.com/@babel/standalone@7.24.4/babel.min.js"></script>
     
     <style>
@@ -34,6 +34,9 @@
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
         .recharts-wrapper { margin: 0 auto; }
+        /* Animasi Fade In */
+        .fade-in { animation: fadeIn 0.5s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-800">
@@ -41,7 +44,7 @@
     <!-- Tempat Aplikasi React akan Muncul -->
     <div id="root"></div>
 
-    <!-- 4. Kode Aplikasi (Logika React Anda ada di sini) -->
+    <!-- 4. Kode Aplikasi -->
     <script type="text/babel" data-type="module">
         import React, { useState, useMemo, useEffect } from 'react';
         import { createRoot } from 'react-dom/client';
@@ -55,7 +58,7 @@
           Package, Target, LayoutDashboard, Settings, Filter, Truck, Loader2, 
           FileSpreadsheet, UploadCloud, Briefcase, ShoppingBag, Layers, 
           ChevronDown, PieChart as PieIcon, Warehouse, Search, Table, 
-          AlertTriangle, RotateCcw, Database 
+          AlertTriangle, RotateCcw, Database, Lock, LogOut, User
         } from 'lucide-react';
         import { initializeApp } from "firebase/app";
         import { 
@@ -76,12 +79,10 @@
           appId: "1:789866197217:web:b26378b445fa2c501fc7a0"
         };
 
-        // Cek jika ada config dari environment (opsional)
         const firebaseConfig = typeof window.__firebase_config !== 'undefined' ? JSON.parse(window.__firebase_config) : userProvidedConfig;
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        // Fallback appId
         const appId = typeof window.__app_id !== 'undefined' ? window.__app_id : 'stock-dashboard-default';
         const __initial_auth_token = window.__initial_auth_token || '';
 
@@ -129,9 +130,14 @@
           const [activeTab, setActiveTab] = useState('dashboard');
           const [adminSection, setAdminSection] = useState('stock'); 
           const [filterPeriod, setFilterPeriod] = useState('Semua');
-          const [outboundSubTab, setOutboundSubTab] = useState('Retail');
           const [searchTerm, setSearchTerm] = useState('');
           const [isProcessing, setIsProcessing] = useState(false);
+          
+          // --- ADMIN AUTH STATE ---
+          const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
+          const [loginUser, setLoginUser] = useState('');
+          const [loginPass, setLoginPass] = useState('');
+          const [loginError, setLoginError] = useState('');
           
           // Data Collections
           const [data, setData] = useState([]);
@@ -190,15 +196,12 @@
             return () => unsubscribe();
           }, []);
 
-          // Helper untuk sinkronisasi realtime dengan Firestore
           const syncCollection = (collName, setter) => {
             if (!user) return;
             const q = query(collection(db, 'artifacts', appId, 'public', 'data', collName));
             
             return onSnapshot(q, (snapshot) => {
               const fetchedData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-              
-              // Sorting logic
               if (collName === 'master_data_pallet') {
                 fetchedData.sort((a, b) => (a.material || '').localeCompare(b.material || ''));
               } else {
@@ -212,22 +215,18 @@
 
           useEffect(() => {
              if(!user) return;
-             
              const unsub1 = syncCollection('stock_accuracy', setData);
              const unsub2 = syncCollection('outbound_fg', setOutboundData);
              const unsub3 = syncCollection('warehouse_utilization', setUtilizationData);
              const unsub4 = syncCollection('damage_rate', setDamageData);
              const unsub5 = syncCollection('pallet_return', setPalletReturnData); 
              const unsub6 = syncCollection('master_data_pallet', setMasterData); 
-             
              return () => { 
                unsub1?.(); unsub2?.(); unsub3?.(); unsub4?.(); unsub5?.(); unsub6?.(); 
              };
           }, [user]);
 
-          // --- LOGIKA UTAMA (COMPUTED METRICS) ---
-
-          // 1. Stock Accuracy Logic
+          // --- COMPUTED METRICS ---
           const availablePeriods = useMemo(() => {
             const periods = [...new Set(data.map(item => item.period))];
             return ['Semua', ...periods];
@@ -238,7 +237,6 @@
             return data.filter(item => item.period === filterPeriod);
           }, [data, filterPeriod]);
 
-          // Kalkulasi Tren Bulanan (Semua Data)
           const monthlyAccuracyTrend = useMemo(() => {
             const periodMap = {};
             data.forEach(item => {
@@ -270,14 +268,11 @@
 
           const stats = useMemo(() => {
             if (dashboardData.length === 0) return { avgAccuracy: 0, totalVariance: 0, totalItems: 0, statusColor: 'text-slate-500' };
-            
             const totalSystem = dashboardData.reduce((sum, item) => sum + Number(item.system), 0);
             const totalPhysical = dashboardData.reduce((sum, item) => sum + Number(item.physical), 0);
             const totalAbsVariance = dashboardData.reduce((sum, item) => sum + Math.abs(item.variance), 0);
-            
             const globalAccuracy = totalSystem === 0 ? 0 : ((1 - (totalAbsVariance / totalSystem)) * 100);
             const isTargetMet = globalAccuracy >= TARGET_ACCURACY;
-            
             return {
               avgAccuracy: globalAccuracy.toFixed(3),
               totalVariance: totalPhysical - totalSystem,
@@ -290,7 +285,6 @@
           const chartData = useMemo(() => {
             const agg = {};
             categories.forEach(c => { agg[c] = { category: c, totalSystem: 0, totalVariance: 0, count: 0 }; });
-            
             dashboardData.forEach(item => {
               if (agg[item.category]) {
                 agg[item.category].totalSystem += Number(item.system);
@@ -298,27 +292,22 @@
                 agg[item.category].count += 1;
               }
             });
-
             return Object.values(agg).map(item => {
               const acc = item.totalSystem === 0 ? 0 : ((1 - (item.totalVariance / item.totalSystem)) * 100);
               return { name: item.category, accuracy: parseFloat(acc.toFixed(3)), count: item.count };
             });
           }, [dashboardData]);
 
-          // 2. Outbound Logic
+          // --- Outbound Logic ---
           const outboundGlobals = useMemo(() => {
-            let retailTotal = 0;
-            let projectTotal = 0;
-            
+            let retailTotal = 0; let projectTotal = 0;
             outboundData.forEach(item => {
               const cat = item.category || 'Retail'; 
               if (cat === 'Retail') retailTotal += Number(item.qty);
               if (cat === 'Project') projectTotal += Number(item.qty);
             });
-            
             const grandTotal = retailTotal + projectTotal;
-            return { 
-              retailTotal, projectTotal, grandTotal,
+            return { retailTotal, projectTotal, grandTotal,
               retailPercentage: grandTotal === 0 ? 0 : ((retailTotal / grandTotal) * 100).toFixed(1),
               projectPercentage: grandTotal === 0 ? 0 : ((projectTotal / grandTotal) * 100).toFixed(1)
             };
@@ -326,11 +315,7 @@
 
           const globalOutboundMatrix = useMemo(() => {
             const matrix = {};
-            outboundProductsList.forEach(p => { 
-              matrix[p] = { product: p, total: 0 }; 
-              months.forEach(m => matrix[p][m] = 0); 
-            });
-
+            outboundProductsList.forEach(p => { matrix[p] = { product: p, total: 0 }; months.forEach(m => matrix[p][m] = 0); });
             outboundData.forEach(item => {
                 if (!matrix[item.product]) { 
                   matrix[item.product] = { product: item.product, total: 0 }; 
@@ -339,43 +324,29 @@
                 matrix[item.product][item.month] += Number(item.qty);
                 matrix[item.product].total += Number(item.qty);
             });
-
-            return Object.values(matrix).map(item => ({ 
-              ...item, 
-              percentage: outboundGlobals.grandTotal === 0 ? 0 : ((item.total / outboundGlobals.grandTotal) * 100).toFixed(1) 
-            }));
+            return Object.values(matrix).map(item => ({ ...item, percentage: outboundGlobals.grandTotal === 0 ? 0 : ((item.total / outboundGlobals.grandTotal) * 100).toFixed(1) }));
           }, [outboundData, outboundGlobals.grandTotal]);
 
-          // 3. Utilization Logic
+          // --- Utilization Logic ---
           const utilizationStats = useMemo(() => {
             const latestSnapshot = utilizationData.sort((a, b) => b.timestamp - a.timestamp)[0] || { capacity: 56549, used: 0 };
             const totalCapacity = Number(latestSnapshot.capacity) || 56549;
             const totalUsed = Number(latestSnapshot.used) || 0;
             const utilizationRate = totalCapacity === 0 ? 0 : ((totalUsed / totalCapacity) * 100).toFixed(1);
-            const emptySpace = totalCapacity - totalUsed;
-            
             const monthlyTrendData = months.map(m => {
                 const entry = utilizationData.filter(d => d.period && d.period.includes(m)).sort((a, b) => b.timestamp - a.timestamp)[0];
                 const cap = entry ? Number(entry.capacity) : 56549; 
                 const us = entry ? Number(entry.used) : 0;
-                return { 
-                  name: m, 
-                  Used: us, 
-                  Empty: cap > us ? cap - us : 0, 
-                  Capacity: cap, 
-                  utilization: cap === 0 ? 0 : (us / cap * 100).toFixed(1) 
-                };
+                return { name: m, Used: us, Empty: cap > us ? cap - us : 0, Capacity: cap, utilization: cap === 0 ? 0 : (us / cap * 100).toFixed(1) };
             });
-            return { totalCapacity, totalUsed, utilizationRate, emptySpace, monthlyTrendData };
+            return { totalCapacity, totalUsed, utilizationRate, emptySpace: totalCapacity - totalUsed, monthlyTrendData };
           }, [utilizationData]);
 
-          // 4. Damage Rate Logic
+          // --- Damage Logic ---
           const damageStats = useMemo(() => {
             const totalHandling = damageData.reduce((sum, item) => sum + Number(item.handling), 0);
             const totalDamage = damageData.reduce((sum, item) => sum + Number(item.damage), 0);
             const avgRate = totalHandling === 0 ? 0 : ((totalDamage / totalHandling) * 100).toFixed(3);
-            const isSafe = parseFloat(avgRate) <= DAMAGE_TOLERANCE;
-            
             const monthlyTrend = months.map(m => {
                 const entry = damageData.filter(d => d.month === m).sort((a, b) => b.timestamp - a.timestamp)[0];
                 const h = entry ? Number(entry.handling) : 0;
@@ -383,50 +354,34 @@
                 const r = h === 0 ? 0 : ((d / h) * 100).toFixed(3);
                 return { name: m, rate: parseFloat(r), limit: DAMAGE_TOLERANCE };
             });
-            return { totalHandling, totalDamage, avgRate, isSafe, monthlyTrend };
+            return { totalHandling, totalDamage, avgRate, isSafe: parseFloat(avgRate) <= DAMAGE_TOLERANCE, monthlyTrend };
           }, [damageData]);
 
-          // 5. Pallet Return Logic
+          // --- Pallet Logic ---
           const palletStats = useMemo(() => {
               const dataByMonth = {};
-              months.forEach(m => dataByMonth[m] = { returned25: 0, returned26: 0, outgoing25: 0, outgoing26: 0, targetQty: 1400, targetPct: 35 });
-              
+              months.forEach(m => dataByMonth[m] = { returned25: 0, returned26: 0, outgoing25: 0, outgoing26: 0, targetQty: 1400 });
               palletReturnData.forEach(item => {
                   if (dataByMonth[item.month]) {
-                     dataByMonth[item.month].returned26 = Number(item.returned26 || item.returned || 0);
-                     dataByMonth[item.month].returned25 = Number(item.returned25 || 0);
-                     dataByMonth[item.month].outgoing26 = Number(item.outgoing26 || item.outgoing || 0);
-                     dataByMonth[item.month].outgoing25 = Number(item.outgoing25 || 0);
-                     if (item.targetQty) dataByMonth[item.month].targetQty = Number(item.targetQty);
+                      dataByMonth[item.month].returned26 = Number(item.returned26 || item.returned || 0);
+                      dataByMonth[item.month].returned25 = Number(item.returned25 || 0);
+                      dataByMonth[item.month].outgoing26 = Number(item.outgoing26 || item.outgoing || 0);
+                      dataByMonth[item.month].outgoing25 = Number(item.outgoing25 || 0);
+                      if (item.targetQty) dataByMonth[item.month].targetQty = Number(item.targetQty);
                   }
               });
-
               const tableRows = months.map((m, idx) => {
                   const d = dataByMonth[m];
-                  const actualVsTarget = d.targetQty === 0 ? 0 : Math.round((d.returned26 / d.targetQty) * 100);
-                  const actualVsOutgoing = d.outgoing26 === 0 ? 0 : Math.round((d.returned26 / d.outgoing26) * 100);
-                  return { no: idx + 1, month: m, ...d, actualVsTarget, actualVsOutgoing };
+                  return { no: idx + 1, month: m, ...d };
               });
-
               const totalReturned26 = tableRows.reduce((sum, r) => sum + r.returned26, 0);
               const totalOutgoing26 = tableRows.reduce((sum, r) => sum + r.outgoing26, 0);
               const totalTargetQty = tableRows.reduce((sum, r) => sum + r.targetQty, 0); 
               const totalActualVsTarget = totalTargetQty === 0 ? 0 : Math.round((totalReturned26 / totalTargetQty) * 100);
               const totalActualVsOutgoing = totalOutgoing26 === 0 ? 0 : Math.round((totalReturned26 / totalOutgoing26) * 100);
-              
               const chartData = tableRows.map(r => ({ name: r.month, Returned: r.returned26, Outgoing: r.outgoing26, Target: r.targetQty }));
-              
               return { tableRows, totalReturned26, totalOutgoing26, totalTargetQty, totalActualVsTarget, totalActualVsOutgoing, chartData };
           }, [palletReturnData]);
-
-          // 6. Master Data Search
-          const filteredStandards = useMemo(() => {
-            if (!searchTerm) return masterData;
-            return masterData.filter(item => 
-                (item.material || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
-                (item.matNum || '').toLowerCase().includes(searchTerm.toLowerCase())
-            );
-          }, [searchTerm, masterData]);
 
           // --- EVENT HANDLERS ---
           const handleInputChange = (e) => setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
@@ -434,6 +389,23 @@
           const handleOutboundChange = (e) => setOutboundForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
           const handleDamageChange = (e) => setDamageForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
           const handlePalletChange = (e) => setPalletForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
+
+          const handleAdminLogin = (e) => {
+            e.preventDefault();
+            if (loginUser === 'admin' && loginPass === 'admin123') {
+              setIsAdminLoggedIn(true);
+              setLoginError('');
+              // Simpan sesi sementara di state (hilang saat refresh untuk keamanan)
+            } else {
+              setLoginError('Username atau Password salah!');
+            }
+          };
+
+          const handleLogout = () => {
+            setIsAdminLoggedIn(false);
+            setLoginUser('');
+            setLoginPass('');
+          };
 
           const submitToFirebase = async (collectionName, dataObj, successMsg, resetFn) => {
             if (!user) return;
@@ -452,13 +424,12 @@
 
           const handleSubmit = (e) => {
             e.preventDefault();
-            if (formData.system === '' || formData.physical === '' || formData.period === '') return;
+            if (formData.system === '' || formData.physical === '') return;
             const sys = Number(formData.system);
             const phys = Number(formData.physical);
             const variance = phys - sys;
             let acc = sys === 0 ? 0 : (1 - (Math.abs(variance) / sys)) * 100;
             if (acc < 0) acc = 0;
-            
             submitToFirebase('stock_accuracy', {
               date: new Date().toISOString().split('T')[0],
               period: formData.period,
@@ -514,7 +485,7 @@
             }, "Data Pallet Tersimpan", () => setPalletForm(prev => ({ ...prev, returned25: '', returned26: '', outgoing25: '', outgoing26: '' })));
           };
 
-          // --- BULK UPLOAD HANDLERS ---
+          // --- BULK UPLOAD HANDLERS (Same as before) ---
           const saveBatchToFirebase = async (collectionName, dataArray, successMsg, resetFn) => {
             if (!user || dataArray.length === 0) return;
             setIsProcessing(true);
@@ -572,66 +543,6 @@
               });
             }
             setBulkPreview(preview);
-          };
-
-          const handlePalletBulkParse = (text) => {
-            setPalletBulkText(text);
-            if (!text) { setPalletBulkPreview([]); return; }
-            const lines = text.trim().split('\n');
-            const preview = [];
-            lines.forEach(line => {
-                const cols = line.split('\t').map(s => s.trim());
-                if (cols.length < 2) return; 
-                let mIdx = -1;
-                for(let i=0; i<3; i++) {
-                   if (months.some(m => m.toLowerCase() === (cols[i] || '').toLowerCase())) {
-                     mIdx = i; break;
-                   }
-                }
-                if (mIdx !== -1) {
-                    const monthName = months.find(m => m.toLowerCase() === cols[mIdx].toLowerCase());
-                    const cleanNum = (str) => { if (!str) return 0; return Number(str.replace(/\./g, '')) || 0; };
-                    const returned25 = cleanNum(cols[mIdx+1]);
-                    const returned26 = cleanNum(cols[mIdx+2]);
-                    const outgoing25 = cleanNum(cols[mIdx+3]);
-                    const outgoing26 = cleanNum(cols[mIdx+4]);
-                    if (returned26 > 0 || outgoing26 > 0 || returned25 > 0 || outgoing25 > 0) {
-                         preview.push({ month: monthName, returned25, returned26, outgoing25, outgoing26 });
-                    }
-                }
-            });
-            setPalletBulkPreview(preview);
-          };
-
-          const handleMasterBulkParse = (text) => {
-            setMasterBulkText(text);
-            if (!text) { setMasterBulkPreview([]); return; }
-            const lines = text.trim().split('\n');
-            const preview = [];
-            lines.forEach(line => {
-                const cols = line.split('\t').map(s => s.trim());
-                if (cols.length >= 6) {
-                     const cleanNum = (str) => { if (!str) return 0; return Number(str.replace(/,/g, '.').trim()) || 0; };
-                     preview.push({ material: cols[0], unit: cols[1], matNum: cols[2], pToZak: cleanNum(cols[4]), pToTon: cleanNum(cols[5]) });
-                }
-            });
-            setMasterBulkPreview(preview);
-          };
-
-          const handleDelete = async (id, type) => {
-            if (!user) return;
-            if (!window.confirm("Apakah Anda yakin ingin menghapus data ini?")) return;
-            let collName = 'stock_accuracy';
-            if (type === 'outbound') collName = 'outbound_fg';
-            if (type === 'utilization') collName = 'warehouse_utilization';
-            if (type === 'damage') collName = 'damage_rate';
-            if (type === 'pallet') collName = 'pallet_return';
-            if (type === 'master') collName = 'master_data_pallet';
-            try { 
-              await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collName, id)); 
-            } catch (error) { 
-              console.error("Error deleting:", error); 
-            }
           };
 
           // --- RENDER DASHBOARD ---
@@ -743,9 +654,7 @@
                   </div>
                 )}
 
-                {/* Other Tabs (Code shortened for clarity, logic is preserved) */}
                 {activeTab === 'outbound' && (
-                  /* --- Outbound UI Copied Here --- */
                   <div className="space-y-8 animate-in fade-in duration-500">
                     <div className="flex justify-between items-center mb-2">
                       <div><h2 className="text-2xl font-bold text-slate-900">Outbound Finish Good</h2></div>
@@ -793,22 +702,20 @@
 
                 {activeTab === 'damage' && (
                   <div className="space-y-8 animate-in fade-in duration-500">
-                     {/* Damage UI simplified for brevity */}
-                     <div className="flex justify-between items-center bg-white p-4 rounded-xl border shadow-sm">
-                        <h2 className="text-2xl font-bold flex gap-2"><AlertTriangle className="text-red-600"/> Damage Rate</h2>
-                     </div>
-                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <StatCard title="Handling" value={damageStats.totalHandling.toLocaleString()} icon={Layers} colorClass="text-slate-600"/>
-                        <StatCard title="Damage" value={damageStats.totalDamage.toLocaleString()} icon={AlertCircle} colorClass="text-red-600"/>
-                        <StatCard title="Rate" value={`${damageStats.avgRate}%`} icon={Target} colorClass={damageStats.isSafe?"text-emerald-600":"text-red-600"}/>
-                     </div>
-                     <Card><div className="h-80 w-full"><ResponsiveContainer><ComposedChart data={damageStats.monthlyTrend}><CartesianGrid vertical={false}/><XAxis dataKey="name"/><YAxis/><Tooltip/><Line type="monotone" dataKey="rate" stroke="#3b82f6" strokeWidth={3}/></ComposedChart></ResponsiveContainer></div></Card>
+                      <div className="flex justify-between items-center bg-white p-4 rounded-xl border shadow-sm">
+                         <h2 className="text-2xl font-bold flex gap-2"><AlertTriangle className="text-red-600"/> Damage Rate</h2>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                         <StatCard title="Handling" value={damageStats.totalHandling.toLocaleString()} icon={Layers} colorClass="text-slate-600"/>
+                         <StatCard title="Damage" value={damageStats.totalDamage.toLocaleString()} icon={AlertCircle} colorClass="text-red-600"/>
+                         <StatCard title="Rate" value={`${damageStats.avgRate}%`} icon={Target} colorClass={damageStats.isSafe?"text-emerald-600":"text-red-600"}/>
+                      </div>
+                      <Card><div className="h-80 w-full"><ResponsiveContainer><ComposedChart data={damageStats.monthlyTrend}><CartesianGrid vertical={false}/><XAxis dataKey="name"/><YAxis/><Tooltip/><Line type="monotone" dataKey="rate" stroke="#3b82f6" strokeWidth={3}/></ComposedChart></ResponsiveContainer></div></Card>
                   </div>
                 )}
 
                 {activeTab === 'pallet' && (
                   <div className="space-y-8 animate-in fade-in duration-500">
-                    {/* Pallet UI */}
                     <div className="flex justify-between items-center bg-white p-4 rounded-xl border shadow-sm"><h2 className="text-2xl font-bold flex gap-2"><RotateCcw className="text-amber-600"/> Pallet Return</h2></div>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                         <StatCard title="Ret '26" value={palletStats.totalReturned26.toLocaleString()} icon={RotateCcw} colorClass="text-blue-600"/>
@@ -824,19 +731,281 @@
                 )}
 
                 {activeTab === 'admin' && (
-                  <div className="space-y-6">
-                    <div className="flex justify-center"><div className="bg-slate-200 p-1 rounded-lg inline-flex gap-1 flex-wrap justify-center">{['stock','outbound','utilization','damage','pallet','master'].map(s=><button key={s} onClick={()=>setAdminSection(s)} className={`px-4 py-2 text-sm font-bold rounded capitalize ${adminSection===s?'bg-white shadow':'text-slate-500'}`}>{s}</button>)}</div></div>
-                    
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                        {adminSection === 'stock' && (
-                            <div className="lg:col-span-1"><Card className="border-blue-100"><h2 className="font-bold mb-4">Input Stok</h2><form onSubmit={handleSubmit} className="space-y-4"><input name="period" value={formData.period} onChange={handleInputChange} className="w-full p-2 border rounded" placeholder="Periode"/><input name="system" type="number" value={formData.system} onChange={handleInputChange} className="w-full p-2 border rounded" placeholder="System"/><input name="physical" type="number" value={formData.physical} onChange={handleInputChange} className="w-full p-2 border rounded" placeholder="Fisik"/><button className="w-full bg-blue-600 text-white p-2 rounded">Simpan</button></form></Card></div>
-                        )}
-                        {/* Repeat similar simplified structure for other admin panels to save space in this HTML file, logic is preserved in functions above */}
-                        {/* Placeholder for fully functioning forms derived from functions above */}
-                        <div className="lg:col-span-3 text-center text-slate-400 text-sm">
-                            (Formulir input aktif: {adminSection}. Gunakan fungsi di atas untuk logika lengkap.)
+                  <div className="min-h-[500px]">
+                    {!isAdminLoggedIn ? (
+                       <div className="flex flex-col items-center justify-center h-full pt-20 animate-in fade-in duration-500">
+                          <Card className="w-full max-w-md p-8 border-t-4 border-t-blue-600">
+                             <div className="flex flex-col items-center mb-6">
+                                <div className="bg-blue-100 p-3 rounded-full mb-3">
+                                   <Lock size={32} className="text-blue-600" />
+                                </div>
+                                <h2 className="text-2xl font-bold text-slate-800">Login Admin</h2>
+                                <p className="text-slate-500 text-sm">Masuk untuk mengelola data</p>
+                             </div>
+                             <form onSubmit={handleAdminLogin} className="space-y-4">
+                                <div>
+                                   <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">Username</label>
+                                   <div className="relative">
+                                     <User className="absolute left-3 top-2.5 text-slate-400" size={18}/>
+                                     <input 
+                                        type="text" 
+                                        value={loginUser}
+                                        onChange={(e) => setLoginUser(e.target.value)}
+                                        className="w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                                        placeholder="Masukkan username"
+                                     />
+                                   </div>
+                                </div>
+                                <div>
+                                   <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">Password</label>
+                                   <div className="relative">
+                                     <Lock className="absolute left-3 top-2.5 text-slate-400" size={18}/>
+                                     <input 
+                                        type="password" 
+                                        value={loginPass}
+                                        onChange={(e) => setLoginPass(e.target.value)}
+                                        className="w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                                        placeholder="Masukkan password"
+                                     />
+                                   </div>
+                                </div>
+                                {loginError && (
+                                   <div className="bg-red-50 text-red-600 text-sm p-3 rounded-lg flex items-center gap-2">
+                                      <AlertCircle size={16}/> {loginError}
+                                   </div>
+                                )}
+                                <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-lg transition-colors shadow-sm">
+                                   Login Dashboard
+                                </button>
+                             </form>
+                          </Card>
+                       </div>
+                    ) : (
+                      <div className="space-y-6 animate-in fade-in duration-500">
+                        <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                           <div className="flex items-center gap-3">
+                              <div className="bg-green-100 p-2 rounded-full"><User size={20} className="text-green-700"/></div>
+                              <div>
+                                 <h2 className="text-lg font-bold text-slate-800">Admin Dashboard</h2>
+                                 <p className="text-xs text-slate-500">Akses penuh pengelolaan data</p>
+                              </div>
+                           </div>
+                           <button onClick={handleLogout} className="flex items-center gap-2 text-rose-600 hover:bg-rose-50 px-4 py-2 rounded-lg font-medium transition-colors text-sm">
+                              <LogOut size={16}/> Logout
+                           </button>
                         </div>
-                    </div>
+
+                        <div className="flex justify-center">
+                          <div className="bg-slate-200 p-1 rounded-lg inline-flex gap-1 flex-wrap justify-center">
+                            {['stock','outbound','utilization','damage','pallet','bulk'].map(s=>(
+                              <button key={s} onClick={()=>setAdminSection(s)} className={`px-4 py-2 text-sm font-bold rounded capitalize transition-all ${adminSection===s?'bg-white text-blue-700 shadow ring-1 ring-black/5':'text-slate-500 hover:text-slate-700'}`}>
+                                {s}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                          {adminSection === 'stock' && (
+                             <div className="lg:col-span-1">
+                                <Card className="border-t-4 border-t-blue-500">
+                                   <h2 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2"><Package size={20}/> Input Stock Accuracy</h2>
+                                   <form onSubmit={handleSubmit} className="space-y-4">
+                                      <div>
+                                         <label className="text-xs font-bold text-slate-500">Periode</label>
+                                         <input name="period" value={formData.period} onChange={handleInputChange} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Desember 2023"/>
+                                      </div>
+                                      <div>
+                                         <label className="text-xs font-bold text-slate-500">Kategori</label>
+                                         <select name="category" value={formData.category} onChange={handleInputChange} className="w-full p-2 border rounded-lg outline-none">
+                                            {categories.map(c=><option key={c} value={c}>{c}</option>)}
+                                         </select>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-4">
+                                         <div><label className="text-xs font-bold text-slate-500">System (Qty)</label><input name="system" type="number" value={formData.system} onChange={handleInputChange} className="w-full p-2 border rounded-lg outline-none" placeholder="0"/></div>
+                                         <div><label className="text-xs font-bold text-slate-500">Fisik (Qty)</label><input name="physical" type="number" value={formData.physical} onChange={handleInputChange} className="w-full p-2 border rounded-lg outline-none" placeholder="0"/></div>
+                                      </div>
+                                      <button className="w-full bg-blue-600 text-white font-bold p-2.5 rounded-lg hover:bg-blue-700 transition-colors">Simpan Data</button>
+                                   </form>
+                                </Card>
+                             </div>
+                          )}
+
+                          {adminSection === 'outbound' && (
+                             <div className="lg:col-span-1">
+                                <Card className="border-t-4 border-t-emerald-500">
+                                   <h2 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2"><Truck size={20}/> Input Outbound</h2>
+                                   <form onSubmit={handleOutboundSubmit} className="space-y-4">
+                                      <div className="grid grid-cols-2 gap-4">
+                                         <div>
+                                            <label className="text-xs font-bold text-slate-500">Kategori</label>
+                                            <select name="category" value={outboundForm.category} onChange={handleOutboundChange} className="w-full p-2 border rounded-lg outline-none">
+                                               {outboundCategories.map(c=><option key={c} value={c}>{c}</option>)}
+                                            </select>
+                                         </div>
+                                         <div>
+                                            <label className="text-xs font-bold text-slate-500">Bulan</label>
+                                            <select name="month" value={outboundForm.month} onChange={handleOutboundChange} className="w-full p-2 border rounded-lg outline-none">
+                                               {months.map(m=><option key={m} value={m}>{m}</option>)}
+                                            </select>
+                                         </div>
+                                      </div>
+                                      <div>
+                                         <label className="text-xs font-bold text-slate-500">Produk</label>
+                                         <select name="product" value={outboundForm.product} onChange={handleOutboundChange} className="w-full p-2 border rounded-lg outline-none">
+                                            {outboundProductsList.map(p=><option key={p} value={p}>{p}</option>)}
+                                         </select>
+                                      </div>
+                                      <div>
+                                         <label className="text-xs font-bold text-slate-500">Qty Outbound</label>
+                                         <input name="qty" type="number" value={outboundForm.qty} onChange={handleOutboundChange} className="w-full p-2 border rounded-lg outline-none" placeholder="0"/>
+                                      </div>
+                                      <button className="w-full bg-emerald-600 text-white font-bold p-2.5 rounded-lg hover:bg-emerald-700 transition-colors">Simpan Outbound</button>
+                                   </form>
+                                </Card>
+                             </div>
+                          )}
+
+                          {adminSection === 'utilization' && (
+                             <div className="lg:col-span-1">
+                                <Card className="border-t-4 border-t-purple-500">
+                                   <h2 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2"><Warehouse size={20}/> Input Utilisasi</h2>
+                                   <form onSubmit={handleUtilizationSubmit} className="space-y-4">
+                                      <div className="grid grid-cols-2 gap-4">
+                                         <div>
+                                            <label className="text-xs font-bold text-slate-500">Periode</label>
+                                            <select name="period" value={utilizationForm.period} onChange={handleUtilizationChange} className="w-full p-2 border rounded-lg outline-none">
+                                               {months.map(m=><option key={m} value={m}>{m}</option>)}
+                                            </select>
+                                         </div>
+                                         <div>
+                                            <label className="text-xs font-bold text-slate-500">Zone</label>
+                                            <select name="zone" value={utilizationForm.zone} onChange={handleUtilizationChange} className="w-full p-2 border rounded-lg outline-none">
+                                               {warehouseZones.map(z=><option key={z} value={z}>{z}</option>)}
+                                            </select>
+                                         </div>
+                                      </div>
+                                      <div><label className="text-xs font-bold text-slate-500">Kapasitas Total</label><input name="capacity" type="number" value={utilizationForm.capacity} onChange={handleUtilizationChange} className="w-full p-2 border rounded-lg outline-none"/></div>
+                                      <div><label className="text-xs font-bold text-slate-500">Terpakai (Used)</label><input name="used" type="number" value={utilizationForm.used} onChange={handleUtilizationChange} className="w-full p-2 border rounded-lg outline-none"/></div>
+                                      <button className="w-full bg-purple-600 text-white font-bold p-2.5 rounded-lg hover:bg-purple-700 transition-colors">Simpan Utilisasi</button>
+                                   </form>
+                                </Card>
+                             </div>
+                          )}
+
+                          {adminSection === 'damage' && (
+                             <div className="lg:col-span-1">
+                                <Card className="border-t-4 border-t-rose-500">
+                                   <h2 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2"><AlertTriangle size={20}/> Input Damage</h2>
+                                   <form onSubmit={handleDamageSubmit} className="space-y-4">
+                                      <div>
+                                         <label className="text-xs font-bold text-slate-500">Bulan</label>
+                                         <select name="month" value={damageForm.month} onChange={handleDamageChange} className="w-full p-2 border rounded-lg outline-none">
+                                            {months.map(m=><option key={m} value={m}>{m}</option>)}
+                                         </select>
+                                      </div>
+                                      <div><label className="text-xs font-bold text-slate-500">Total Handling (Qty)</label><input name="handling" type="number" value={damageForm.handling} onChange={handleDamageChange} className="w-full p-2 border rounded-lg outline-none"/></div>
+                                      <div><label className="text-xs font-bold text-slate-500">Total Damage (Qty)</label><input name="damage" type="number" value={damageForm.damage} onChange={handleDamageChange} className="w-full p-2 border rounded-lg outline-none"/></div>
+                                      <button className="w-full bg-rose-600 text-white font-bold p-2.5 rounded-lg hover:bg-rose-700 transition-colors">Simpan Damage</button>
+                                   </form>
+                                </Card>
+                             </div>
+                          )}
+
+                          {adminSection === 'pallet' && (
+                             <div className="lg:col-span-1">
+                                <Card className="border-t-4 border-t-amber-500">
+                                   <h2 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2"><RotateCcw size={20}/> Input Pallet</h2>
+                                   <form onSubmit={handlePalletSubmit} className="space-y-4">
+                                      <div>
+                                         <label className="text-xs font-bold text-slate-500">Bulan</label>
+                                         <select name="month" value={palletForm.month} onChange={handlePalletChange} className="w-full p-2 border rounded-lg outline-none">
+                                            {months.map(m=><option key={m} value={m}>{m}</option>)}
+                                         </select>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2 rounded">
+                                         <p className="col-span-2 text-xs font-bold text-center border-b pb-1">Return</p>
+                                         <div><label className="text-[10px] font-bold">Size 25</label><input name="returned25" type="number" value={palletForm.returned25} onChange={handlePalletChange} className="w-full p-1 border rounded text-sm"/></div>
+                                         <div><label className="text-[10px] font-bold">Size 26</label><input name="returned26" type="number" value={palletForm.returned26} onChange={handlePalletChange} className="w-full p-1 border rounded text-sm"/></div>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2 rounded">
+                                         <p className="col-span-2 text-xs font-bold text-center border-b pb-1">Outgoing</p>
+                                         <div><label className="text-[10px] font-bold">Size 25</label><input name="outgoing25" type="number" value={palletForm.outgoing25} onChange={handlePalletChange} className="w-full p-1 border rounded text-sm"/></div>
+                                         <div><label className="text-[10px] font-bold">Size 26</label><input name="outgoing26" type="number" value={palletForm.outgoing26} onChange={handlePalletChange} className="w-full p-1 border rounded text-sm"/></div>
+                                      </div>
+                                      <button className="w-full bg-amber-600 text-white font-bold p-2.5 rounded-lg hover:bg-amber-700 transition-colors">Simpan Pallet</button>
+                                   </form>
+                                </Card>
+                             </div>
+                          )}
+
+                          {adminSection === 'bulk' && (
+                             <div className="lg:col-span-3">
+                                <Card className="border-t-4 border-t-slate-600">
+                                   <h2 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2"><FileSpreadsheet size={20}/> Bulk Upload (Copy-Paste Excel)</h2>
+                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                      <div>
+                                         <div className="mb-4">
+                                            <label className="text-xs font-bold text-slate-500 mb-2 block">Pilih Jenis Upload:</label>
+                                            <div className="flex gap-2 mb-2">
+                                               <button onClick={() => setBulkCategory('Retail')} className={`px-3 py-1 text-xs rounded border ${bulkCategory==='Retail'?'bg-blue-100 border-blue-300 font-bold':'bg-white'}`}>Outbound Retail</button>
+                                               <button onClick={() => setBulkCategory('Project')} className={`px-3 py-1 text-xs rounded border ${bulkCategory==='Project'?'bg-blue-100 border-blue-300 font-bold':'bg-white'}`}>Outbound Project</button>
+                                               <button onClick={() => setBulkCategory('Pallet')} className={`px-3 py-1 text-xs rounded border ${bulkCategory==='Pallet'?'bg-blue-100 border-blue-300 font-bold':'bg-white'}`}>Pallet Return</button>
+                                            </div>
+                                         </div>
+                                         <textarea 
+                                            value={bulkCategory === 'Pallet' ? palletBulkText : bulkText} 
+                                            onChange={(e) => bulkCategory === 'Pallet' ? handlePalletBulkParse(e.target.value) : handleBulkParse(e.target.value)} 
+                                            className="w-full h-48 p-2 text-xs font-mono border rounded-lg outline-none bg-slate-50" 
+                                            placeholder="Paste data Excel di sini..."
+                                         ></textarea>
+                                         <button 
+                                            onClick={() => bulkCategory === 'Pallet' ? saveBatchToFirebase('pallet_return', palletBulkPreview, 'Bulk Pallet Tersimpan!', () => {setPalletBulkPreview([]); setPalletBulkText('');}) : saveBatchToFirebase('outbound_fg', bulkPreview, 'Bulk Outbound Tersimpan!', () => {setBulkPreview([]); setBulkText('');})}
+                                            disabled={isProcessing || (bulkCategory === 'Pallet' ? palletBulkPreview.length === 0 : bulkPreview.length === 0)}
+                                            className="mt-4 w-full bg-slate-800 disabled:bg-slate-300 text-white font-bold p-2.5 rounded-lg hover:bg-slate-900 transition-colors flex items-center justify-center gap-2"
+                                         >
+                                            {isProcessing ? <Loader2 className="animate-spin"/> : <UploadCloud size={18}/>}
+                                            Upload {bulkCategory === 'Pallet' ? palletBulkPreview.length : bulkPreview.length} Baris Data
+                                         </button>
+                                      </div>
+                                      <div className="bg-slate-50 p-4 rounded-lg border max-h-80 overflow-y-auto">
+                                         <h4 className="font-bold text-xs text-slate-500 uppercase mb-2">Preview Data</h4>
+                                         {(bulkCategory === 'Pallet' ? palletBulkPreview : bulkPreview).length === 0 ? (
+                                            <p className="text-slate-400 text-sm italic">Belum ada data valid...</p>
+                                         ) : (
+                                            <table className="w-full text-xs text-left">
+                                               <thead>
+                                                  <tr className="border-b">
+                                                     {bulkCategory === 'Pallet' ? (
+                                                        <><th>Bulan</th><th>Ret 26</th><th>Out 26</th></>
+                                                     ) : (
+                                                        <><th>Kategori</th><th>Produk</th><th>Bulan</th><th>Qty</th></>
+                                                     )}
+                                                  </tr>
+                                               </thead>
+                                               <tbody>
+                                                  {(bulkCategory === 'Pallet' ? palletBulkPreview : bulkPreview).slice(0, 10).map((row, i) => (
+                                                     <tr key={i} className="border-b last:border-0">
+                                                        {bulkCategory === 'Pallet' ? (
+                                                           <><td>{row.month}</td><td>{row.returned26}</td><td>{row.outgoing26}</td></>
+                                                        ) : (
+                                                           <><td>{row.category}</td><td>{row.product}</td><td>{row.month}</td><td>{row.qty}</td></>
+                                                        )}
+                                                     </tr>
+                                                  ))}
+                                               </tbody>
+                                            </table>
+                                         )}
+                                         {(bulkCategory === 'Pallet' ? palletBulkPreview : bulkPreview).length > 10 && <p className="text-center text-xs text-slate-400 mt-2">...dan {(bulkCategory === 'Pallet' ? palletBulkPreview : bulkPreview).length - 10} baris lainnya</p>}
+                                      </div>
+                                   </div>
+                                </Card>
+                             </div>
+                          )}
+
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
