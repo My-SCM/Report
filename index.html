@@ -851,8 +851,8 @@
                       <div><h2 className="text-2xl font-bold flex gap-2"><Warehouse className="text-blue-600"/> Warehouse Utilization</h2></div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                      <StatCard title="Kapasitas" value={utilizationStats.totalCapacity.toLocaleString()} icon={Package} colorClass="text-slate-600"/>
-                      <StatCard title="Terisi" value={utilizationStats.totalUsed.toLocaleString()} icon={Layers} colorClass="text-blue-600"/>
+                      <StatCard title="Kapasitas (ton)" value={utilizationStats.totalCapacity.toLocaleString()} icon={Package} colorClass="text-slate-600"/>
+                      <StatCard title="Terisi (ton)" value={utilizationStats.totalUsed.toLocaleString()} icon={Layers} colorClass="text-blue-600"/>
                       <StatCard title="Kosong (%)" value={`${utilizationStats.emptyRate}%`} icon={CheckCircle} colorClass="text-emerald-600"/>
                       <StatCard title="Utilisasi (%)" value={`${utilizationStats.utilizationRate}%`} icon={PieIcon} colorClass={utilizationStats.utilizationRate>85?"text-rose-600":"text-emerald-600"}/>
                     </div>
